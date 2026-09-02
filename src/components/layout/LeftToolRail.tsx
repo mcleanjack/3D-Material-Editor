@@ -50,6 +50,9 @@ export function LeftToolRail() {
   const setAxesVisible = useAppStore((s) => s.setAxesVisible)
   const fitToScreen = useAppStore((s) => s.fitToScreen)
   const resetCamera = useAppStore((s) => s.resetCamera)
+  const activeRightPanel = useAppStore((s) => s.activeRightPanel)
+  const setActiveRightPanel = useAppStore((s) => s.setActiveRightPanel)
+  const sunEnabled = useAppStore((s) => s.sunSettings.enabled)
   const isolateActive = useAppStore((s) => s.isolateActive)
   const isolateSelected = useAppStore((s) => s.isolateSelected)
   const exitIsolate = useAppStore((s) => s.exitIsolate)
@@ -76,6 +79,12 @@ export function LeftToolRail() {
       <div className="my-1 h-px w-6 bg-[var(--panel-border)]" />
 
       <RailButton icon="wireframe" label="Wireframe" active={wireframe} onClick={() => setWireframe(!wireframe)} />
+      <RailButton
+        icon="sun"
+        label="Sun (lighting & shadow preview)"
+        active={sunEnabled}
+        onClick={() => setActiveRightPanel(activeRightPanel === 'sun' ? null : 'sun')}
+      />
       <RailButton
         icon="isolate"
         label={isolateActive ? 'Exit Isolate' : 'Isolate Selected'}
