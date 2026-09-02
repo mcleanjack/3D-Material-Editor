@@ -43,6 +43,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       updatedAt: now,
       sourceFbxName: app.fbxFileName ?? '',
       materialAssignments: app.materialAssignments,
+      productInfo: app.productInfo,
       faceMaterialAssignments: app.faceMaterialAssignments,
       visibility: Object.fromEntries(Array.from(app.objectMeta.keys()).map((k) => [k, !app.hiddenComponentIds.has(k)])),
       folders: app.folders,
@@ -79,6 +80,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // Same source already loaded — reapply assignments/visibility directly.
       useAppStore.setState({
         materialAssignments: project.materialAssignments,
+        productInfo: project.productInfo ?? {},
         faceMaterialAssignments: project.faceMaterialAssignments ?? {},
         hiddenComponentIds: new Set(
           Object.entries(project.visibility)
@@ -89,6 +91,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         folderMembership: project.folderMembership ?? {},
       })
       void app.reapplyAllAssignments()
+      app.reapplyProductInfo()
     }
 
     if (project.camera && app.sceneManager) {

@@ -6,6 +6,8 @@ import type { ObjectTreeNode } from '../types/tree'
 import type { TreeFolder } from '../types/folder'
 import type { SunSettings } from '../types/sun'
 import { DEFAULT_SUN_SETTINGS } from '../types/sun'
+import type { ProductInfo } from '../types/product'
+import { isProductInfoEmpty } from '../types/product'
 import { importFbx } from '../three/fbxImport'
 import { SceneManager, type ProjectionMode } from '../three/SceneManager'
 import { EdgePreviewController } from '../three/edges/fatLineEdges'
@@ -37,6 +39,11 @@ interface AppState {
   // Assignment
   materialAssignments: Record<string, string>
   applyingMaterials: boolean
+
+  // Product information — per-component metadata, independent of materials/edges/geometry.
+  // See src/types/product.ts. componentId -> ProductInfo (only entries with at least one
+  // non-empty field are kept, so "has product info" is a plain key-presence check).
+  productInfo: Record<string, ProductInfo>
 
   // Face-level assignment
   faceMaterialAssignments: FaceMaterialAssignments
@@ -102,6 +109,12 @@ interface AppState {
   assignMaterialToComponents: (materialId: string | null, componentIds: string[]) => Promise<void>
   assignMaterialToFbxMaterialName: (materialId: string | null, fbxMaterialName: string) => Promise<void>
   reapplyAllAssignments: () => Promise<void>
+
+  setProductInfo: (componentId: string, info: ProductInfo) => void
+  /** Re-stamps every stored ProductInfo onto the live model's userData.productInfo — needed
+   * because the store's record survives across model re-imports/project loads but the actual
+   * THREE objects it targets don't. Mirrors reapplyAllAssignments' role for material data. */
+  reapplyProductInfo: () => void
 
   // Face-level assignment
   selectFace: (componentId: string, faceIndex: number, additive: boolean) => void
@@ -184,6 +197,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   materialAssignments: {},
   applyingMaterials: false,
 
+  productInfo: {},
+
   faceMaterialAssignments: {},
   faceSelectComponentId: null,
   faceSelectedFaceIndices: new Set(),
@@ -232,6 +247,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         fbxFileName: file.name,
         importing: false,
         materialAssignments: {},
+        productInfo: {},
         faceMaterialAssignments: {},
         faceSelectComponentId: null,
         faceSelectedFaceIndices: new Set(),
@@ -543,6 +559,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set({ applyingMaterials: false })
+  },
+
+  setProductInfo: (componentId, info) => {
+    set((s) => {
+      const next = { ...s.productInfo }
+      if (isProductInfoEmpty(info)) delete next[componentId]
+      else next[componentId] = info
+      return { productInfo: next }
+    })
+    get().reapplyProductInfo()
+  },
+
+  reapplyProductInfo: () => {
+    const { modelRoot, productInfo } = get()
+    if (!modelRoot) return
+    // Stamped onto userData.productInfo (not materials, not geometry) so GLTFExporter's default
+    // userData->extras serialization carries it through untouched — see three/exportGlb.ts,
+    // which needs no changes at all for this to round-trip.
+    modelRoot.traverse((obj) => {
+      const componentId = obj.userData.componentId as string | undefined
+      if (!componentId) return
+      const info = productInfo[componentId]
+      if (info) obj.userData.productInfo = info
+      else delete obj.userData.productInfo
+    })
   },
 
   selectFace: (componentId, faceIndex, additive) => {

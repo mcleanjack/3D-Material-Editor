@@ -1,6 +1,7 @@
 import type { EdgeSettings, ExportSettings } from './scene'
 import type { TreeFolder } from './folder'
 import type { SunSettings } from './sun'
+import type { ProductInfo } from './product'
 
 /** A saved authoring session. The source FBX itself is NOT re-embedded here — only a
  * reference/name — because it can be large; the user re-imports the same FBX to resume. */
@@ -18,6 +19,10 @@ export interface AuthoringProject {
   faceMaterialAssignments: Record<string, Record<number, string>>
   /** componentId -> visible */
   visibility: Record<string, boolean>
+  /** componentId -> product/supplier metadata (see src/types/product.ts) — independent of
+   * material assignment, face-level material groups, and component edges. Optional for backward
+   * compatibility with projects saved before this feature existed. */
+  productInfo?: Record<string, ProductInfo>
 
   /** Object Tree folder-grouping layer (see src/types/folder.ts) — an authoring-tool
    * organizational layer only, never written into GLB export. Optional for backward
