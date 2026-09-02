@@ -44,6 +44,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       materialAssignments: app.materialAssignments,
       faceMaterialAssignments: app.faceMaterialAssignments,
       visibility: Object.fromEntries(Array.from(app.objectMeta.keys()).map((k) => [k, !app.hiddenComponentIds.has(k)])),
+      folders: app.folders,
+      folderMembership: app.folderMembership,
       edgeSettings: app.edgeSettings,
       exportSettings: app.exportSettings,
       camera: cam
@@ -80,6 +82,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             .filter(([, visible]) => !visible)
             .map(([id]) => id),
         ),
+        folders: project.folders ?? {},
+        folderMembership: project.folderMembership ?? {},
       })
       void app.reapplyAllAssignments()
     }

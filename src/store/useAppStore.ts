@@ -3,12 +3,14 @@ import * as THREE from 'three'
 import type { ObjectMeta, EdgeSettings, ExportSettings } from '../types/scene'
 import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings } from '../types/scene'
 import type { ObjectTreeNode } from '../types/tree'
+import type { TreeFolder } from '../types/folder'
 import { importFbx } from '../three/fbxImport'
 import { SceneManager, type ProjectionMode } from '../three/SceneManager'
 import { EdgePreviewController } from '../three/edges/fatLineEdges'
 import { buildThreeMaterial } from '../three/materialFactory'
 import { getCanonicalGeometry, getFaceCount, rebuildMeshFaceMaterials, restoreCanonicalGeometry } from '../three/faceMaterials'
 import { useMaterialLibraryStore } from './useMaterialLibraryStore'
+import { makeId } from '../utils/id'
 
 export type ActiveTool = 'select' | 'orbit' | 'pan' | 'zoom' | 'measure' | 'faceSelect'
 export type RightPanelKey = 'objectTree' | 'materials' | 'materialEditor' | 'edgeSettings' | null
@@ -43,6 +45,13 @@ interface AppState {
   hiddenComponentIds: Set<string>
   isolateActive: boolean
 
+  // Object Tree folder grouping — organizational only, never touches the scene graph, the
+  // FBX-derived hierarchy, or GLB export. See src/types/folder.ts.
+  folders: Record<string, TreeFolder>
+  /** componentId -> id of the folder directly containing it (only for objects the user has
+   * explicitly grouped; everything else renders at its original tree position). */
+  folderMembership: Record<string, string>
+
   // Selection
   selectedComponentIds: string[]
   hoveredComponentId: string | null
@@ -76,6 +85,14 @@ interface AppState {
   isolateSelected: () => void
   exitIsolate: () => void
   showAll: () => void
+
+  createFolderFromSelection: (name: string, componentIds: string[]) => string
+  renameFolder: (folderId: string, name: string) => void
+  deleteFolder: (folderId: string) => void
+  moveComponentsToFolder: (componentIds: string[], folderId: string | null) => void
+  moveFolderToFolder: (folderId: string, parentId: string | null) => void
+  toggleFolderVisibility: (folderId: string) => void
+  selectFolderContents: (folderId: string, additive?: boolean) => void
 
   assignMaterialToComponents: (materialId: string | null, componentIds: string[]) => Promise<void>
   assignMaterialToFbxMaterialName: (materialId: string | null, fbxMaterialName: string) => Promise<void>
@@ -118,6 +135,34 @@ function applyVisibility(root: THREE.Object3D, hidden: Set<string>, isolate: Set
 
 let isolateSet: Set<string> | null = null
 
+/** All componentIds contained by a folder, including via nested subfolders. Pure/read-only —
+ * used both by store actions (visibility, selection) and by the tree UI (indicator state). */
+export function collectFolderComponentIds(
+  folders: Record<string, TreeFolder>,
+  folderMembership: Record<string, string>,
+  folderId: string,
+): string[] {
+  const ids: string[] = []
+  for (const [componentId, fid] of Object.entries(folderMembership)) {
+    if (fid === folderId) ids.push(componentId)
+  }
+  for (const folder of Object.values(folders)) {
+    if (folder.parentId === folderId) ids.push(...collectFolderComponentIds(folders, folderMembership, folder.id))
+  }
+  return ids
+}
+
+/** True if `folderId` is `maybeAncestorId` itself, or nested inside it — used to reject a
+ * folder-into-folder drag that would create a cycle. */
+function isFolderOrDescendant(folders: Record<string, TreeFolder>, folderId: string, maybeAncestorId: string): boolean {
+  let cur: string | null = folderId
+  while (cur) {
+    if (cur === maybeAncestorId) return true
+    cur = folders[cur]?.parentId ?? null
+  }
+  return false
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   sceneManager: null,
   edgePreview: null,
@@ -139,6 +184,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   hiddenComponentIds: new Set(),
   isolateActive: false,
+
+  folders: {},
+  folderMembership: {},
 
   selectedComponentIds: [],
   hoveredComponentId: null,
@@ -182,6 +230,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         faceSelectedFaceIndices: new Set(),
         hiddenComponentIds: new Set(),
         isolateActive: false,
+        folders: {},
+        folderMembership: {},
         selectedComponentIds: [],
         hoveredComponentId: null,
         statusMessage: `Imported ${file.name} — ${result.objectMeta.size} objects, ${result.fbxMaterialNames.length} FBX materials.`,
@@ -264,6 +314,106 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ hiddenComponentIds: new Set(), isolateActive: false })
     const { modelRoot } = get()
     if (modelRoot) applyVisibility(modelRoot, new Set(), null)
+  },
+
+  createFolderFromSelection: (name, componentIds) => {
+    const id = makeId('folder')
+    set((s) => {
+      const membership = { ...s.folderMembership }
+      for (const cid of componentIds) membership[cid] = id
+      return {
+        folders: { ...s.folders, [id]: { id, name, parentId: null } },
+        folderMembership: membership,
+      }
+    })
+    return id
+  },
+
+  renameFolder: (folderId, name) => {
+    set((s) => {
+      const folder = s.folders[folderId]
+      if (!folder) return {}
+      return { folders: { ...s.folders, [folderId]: { ...folder, name } } }
+    })
+  },
+
+  deleteFolder: (folderId) => {
+    // Ungroup: contents (subfolders and objects alike) move up to the deleted folder's own
+    // parent level — a top-level folder's contents return to the tree at their original
+    // position. The underlying objects/subfolders themselves are never deleted.
+    set((s) => {
+      const folder = s.folders[folderId]
+      if (!folder) return {}
+      const parentId = folder.parentId
+
+      const folders = { ...s.folders }
+      delete folders[folderId]
+      for (const f of Object.values(folders)) {
+        if (f.parentId === folderId) folders[f.id] = { ...f, parentId }
+      }
+
+      const folderMembership = { ...s.folderMembership }
+      for (const [cid, fid] of Object.entries(folderMembership)) {
+        if (fid !== folderId) continue
+        if (parentId) folderMembership[cid] = parentId
+        else delete folderMembership[cid]
+      }
+
+      return { folders, folderMembership }
+    })
+  },
+
+  moveComponentsToFolder: (componentIds, folderId) => {
+    set((s) => {
+      const membership = { ...s.folderMembership }
+      for (const cid of componentIds) {
+        if (folderId) membership[cid] = folderId
+        else delete membership[cid]
+      }
+      return { folderMembership: membership }
+    })
+  },
+
+  moveFolderToFolder: (folderId, parentId) => {
+    set((s) => {
+      const folder = s.folders[folderId]
+      if (!folder) return {}
+      if (folderId === parentId) return {}
+      // Reject a drop that would nest a folder inside its own descendant (or itself).
+      if (parentId && isFolderOrDescendant(s.folders, parentId, folderId)) return {}
+      return { folders: { ...s.folders, [folderId]: { ...folder, parentId } } }
+    })
+  },
+
+  toggleFolderVisibility: (folderId) => {
+    const { folders, folderMembership, hiddenComponentIds } = get()
+    const ids = collectFolderComponentIds(folders, folderMembership, folderId)
+    if (ids.length === 0) return
+    const allHidden = ids.every((id) => hiddenComponentIds.has(id))
+    set((s) => {
+      const next = new Set(s.hiddenComponentIds)
+      for (const id of ids) {
+        if (allHidden) next.delete(id)
+        else next.add(id)
+      }
+      return { hiddenComponentIds: next }
+    })
+    const { modelRoot, isolateActive } = get()
+    if (modelRoot) applyVisibility(modelRoot, get().hiddenComponentIds, isolateActive ? isolateSet : null)
+  },
+
+  selectFolderContents: (folderId, additive = false) => {
+    const { folders, folderMembership } = get()
+    const ids = collectFolderComponentIds(folders, folderMembership, folderId)
+    set((s) => {
+      if (!additive) return { selectedComponentIds: ids }
+      const nextSet = new Set(s.selectedComponentIds)
+      const allSelected = ids.length > 0 && ids.every((id) => nextSet.has(id))
+      if (allSelected) ids.forEach((id) => nextSet.delete(id))
+      else ids.forEach((id) => nextSet.add(id))
+      return { selectedComponentIds: Array.from(nextSet) }
+    })
+    get().sceneManager?.setSelection(get().selectedComponentIds)
   },
 
   assignMaterialToComponents: async (materialId, componentIds) => {
