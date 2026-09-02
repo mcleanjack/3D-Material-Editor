@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import * as THREE from 'three'
 import type { ObjectMeta, EdgeSettings, ExportSettings } from '../types/scene'
-import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS } from '../types/scene'
+import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings } from '../types/scene'
 import type { ObjectTreeNode } from '../types/tree'
 import { importFbx } from '../three/fbxImport'
 import { SceneManager, type ProjectionMode } from '../three/SceneManager'
@@ -463,7 +463,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   resetCamera: () => get().sceneManager?.resetCamera(),
 
   setEdgeSettings: (partial) => {
-    const merged = { ...get().edgeSettings, ...partial }
+    const merged = clampEdgeSettings({ ...get().edgeSettings, ...partial })
     set({ edgeSettings: merged })
     const { modelRoot, edgePreview } = get()
     if (!modelRoot || !edgePreview) return

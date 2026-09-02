@@ -32,14 +32,30 @@ function stripTextures(mat: THREE.MeshStandardMaterial): THREE.MeshStandardMater
 }
 
 function applyMaterialExportSettings(root: THREE.Object3D, exportSettings: ExportSettings) {
+  // Many meshes commonly share the same assigned material (a whole wall of individually-outlined
+  // bricks, say) — both neutralMaterial() and stripTextures() build a fresh Material instance, so
+  // without caching, "Model Materials off" would embed one neutral material PER MESH rather than
+  // one shared one, and "Textures off" would embed one stripped clone PER MESH PER SHARED
+  // MATERIAL instead of one per distinct original material. Embedded material count must track
+  // distinct materials actually used, not mesh count.
+  const sharedNeutral = exportSettings.includeMaterials ? null : neutralMaterial()
+  const strippedCache = new Map<THREE.Material, THREE.Material>()
+
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh
     if (!mesh.isMesh) return
 
     const applyOne = (m: THREE.Material) => {
-      if (!exportSettings.includeMaterials) return neutralMaterial()
+      if (!exportSettings.includeMaterials) return sharedNeutral!
       const std = m as THREE.MeshStandardMaterial
-      if (!exportSettings.includeTextures && 'map' in std) return stripTextures(std)
+      if (!exportSettings.includeTextures && 'map' in std) {
+        let stripped = strippedCache.get(m)
+        if (!stripped) {
+          stripped = stripTextures(std)
+          strippedCache.set(m, stripped)
+        }
+        return stripped
+      }
       return m
     }
 

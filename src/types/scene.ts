@@ -17,6 +17,21 @@ export const DEFAULT_EDGE_SETTINGS: EdgeSettings = {
   angleThreshold: 35,
 }
 
+/** Below this, EdgesGeometry starts treating near-coplanar triangulation seams within a single
+ * flat face as "real" edges rather than filtering them out — on a dense or large model that can
+ * multiply the raw edge count by 30x+ (measured), which is the single biggest driver of an
+ * oversized `__COMPONENT_EDGES__` export. Clamped centrally (not just in the slider) so a
+ * pathological value can't reach the exporter via a saved project either. */
+export const MIN_EDGE_ANGLE_THRESHOLD = 15
+export const MAX_EDGE_ANGLE_THRESHOLD = 89
+
+export function clampEdgeSettings(settings: EdgeSettings): EdgeSettings {
+  return {
+    ...settings,
+    angleThreshold: Math.min(MAX_EDGE_ANGLE_THRESHOLD, Math.max(MIN_EDGE_ANGLE_THRESHOLD, settings.angleThreshold)),
+  }
+}
+
 export interface ExportSettings {
   includeMaterials: boolean
   includeTextures: boolean

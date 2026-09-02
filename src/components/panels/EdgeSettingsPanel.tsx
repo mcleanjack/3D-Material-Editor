@@ -1,4 +1,5 @@
 import { useAppStore } from '../../store/useAppStore'
+import { MIN_EDGE_ANGLE_THRESHOLD, MAX_EDGE_ANGLE_THRESHOLD } from '../../types/scene'
 import { PanelShell } from './PanelShell'
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -86,13 +87,18 @@ export function EdgeSettingsPanel() {
         <Field label={`Angle Threshold: ${edgeSettings.angleThreshold}° (advanced — faces meeting at a sharper angle are treated as a real edge)`}>
           <input
             type="range"
-            min={1}
-            max={89}
+            min={MIN_EDGE_ANGLE_THRESHOLD}
+            max={MAX_EDGE_ANGLE_THRESHOLD}
             step={1}
             value={edgeSettings.angleThreshold}
             onChange={(e) => setEdgeSettings({ angleThreshold: Number(e.target.value) })}
             className="w-full"
           />
+          <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-faint)]">
+            Below ~{MIN_EDGE_ANGLE_THRESHOLD}° the triangulation seams inside otherwise-flat faces start reading
+            as "real" edges, which can multiply the exported edge geometry many times over on a large model —
+            this is clamped to keep exports a sane size.
+          </p>
         </Field>
       </div>
 
