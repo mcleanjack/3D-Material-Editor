@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useProjectStore } from '../../store/useProjectStore'
 import { exportGlb, downloadBlob } from '../../three/exportGlb'
 import { validateGlb, type GlbValidationReport } from '../../three/reimportValidate'
+import { downloadProductInfoCsv } from '../../utils/exportProductInfo'
 import { Icon } from '../common/Icon'
 import { Button } from '../common/Button'
 import { ExportReportModal } from '../common/ExportReportModal'
@@ -20,6 +21,8 @@ export function TopBar() {
   const sceneManager = useAppStore((s) => s.sceneManager)
   const edgeSettings = useAppStore((s) => s.edgeSettings)
   const exportSettings = useAppStore((s) => s.exportSettings)
+  const productInfo = useAppStore((s) => s.productInfo)
+  const objectMeta = useAppStore((s) => s.objectMeta)
   const setStatusMessage = useAppStore((s) => s.setStatusMessage)
 
   const projectName = useProjectStore((s) => s.currentProjectName)
@@ -31,6 +34,12 @@ export function TopBar() {
     const file = e.target.files?.[0]
     if (file) void importFbxFile(file)
     e.target.value = ''
+  }
+
+  function handleExportProductInfo() {
+    const baseName = (fbxFileName ?? 'model').replace(/\.fbx$/i, '')
+    downloadProductInfoCsv(productInfo, objectMeta, `${baseName}-product-info.csv`)
+    setStatusMessage(`Exported product information for ${Object.keys(productInfo).length} object(s).`)
   }
 
   async function handleExport() {
@@ -80,6 +89,12 @@ export function TopBar() {
                 label="Export GLB…"
                 disabled={!modelRoot}
                 onClick={() => void handleExport()}
+              />
+              <MenuItem
+                icon="export"
+                label="Export Product Information (CSV)…"
+                disabled={Object.keys(productInfo).length === 0}
+                onClick={handleExportProductInfo}
               />
               <div className="my-1 h-px bg-[var(--panel-border)]" />
               <MenuItem icon="save" label="Save Project" onClick={() => void saveCurrentAsProject()} />

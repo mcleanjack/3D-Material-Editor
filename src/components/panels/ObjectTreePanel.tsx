@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useAppStore, collectFolderComponentIds } from '../../store/useAppStore'
 import type { ObjectTreeNode } from '../../types/tree'
 import type { TreeFolder } from '../../types/folder'
+import { EMPTY_PRODUCT_INFO, looksLikeEmail, looksLikeUrl, type ProductInfo } from '../../types/product'
 import { Icon } from '../common/Icon'
 import { PanelShell } from './PanelShell'
 import { MaterialPicker } from './MaterialPicker'
@@ -67,6 +68,7 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
   const hoveredComponentId = useAppStore((s) => s.hoveredComponentId)
   const hiddenComponentIds = useAppStore((s) => s.hiddenComponentIds)
   const folderMembership = useAppStore((s) => s.folderMembership)
+  const hasProductInfo = useAppStore((s) => !!s.productInfo[node.componentId])
   const selectComponent = useAppStore((s) => s.selectComponent)
   const setHover = useAppStore((s) => s.setHover)
   const toggleVisibility = useAppStore((s) => s.toggleVisibility)
@@ -115,6 +117,12 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
         </button>
         <Icon name={node.isMesh ? 'mesh' : 'group'} size={12} className="shrink-0 text-[var(--text-faint)]" />
         <span className="flex-1 truncate">{node.name}</span>
+        {hasProductInfo && (
+          <span
+            title="Has product information"
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400"
+          />
+        )}
         <button
           className="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100"
           onClick={(e) => {
@@ -327,6 +335,118 @@ function SelectionAssignment() {
   )
 }
 
+const productInputClass =
+  'w-full rounded border border-[var(--panel-border)] bg-[#2a2c33] px-2 py-1.5 text-xs text-[var(--text)] outline-none focus:border-blue-500'
+
+function ProductInfoField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[10px] font-medium text-[var(--text-dim)]">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+/** Keyed by componentId from ProductInfoSection so switching the selected object remounts this
+ * with fresh draft state — simpler and less error-prone than a useEffect re-sync. Edits are
+ * local (draft) until Save is clicked, matching how material edits require an explicit save. */
+function ProductInfoFields({ componentId }: { componentId: string }) {
+  const objectMeta = useAppStore((s) => s.objectMeta)
+  const storedInfo = useAppStore((s) => s.productInfo[componentId])
+  const setProductInfo = useAppStore((s) => s.setProductInfo)
+  const [draft, setDraft] = useState<ProductInfo>(() => storedInfo ?? EMPTY_PRODUCT_INFO)
+  const [justSaved, setJustSaved] = useState(false)
+
+  const objectName = objectMeta.get(componentId)?.name ?? componentId
+
+  function update<K extends keyof ProductInfo>(key: K, value: ProductInfo[K]) {
+    setDraft((d) => ({ ...d, [key]: value }))
+    setJustSaved(false)
+  }
+
+  return (
+    <div className="border-t px-3 py-2.5" style={{ borderColor: 'var(--panel-border)' }}>
+      <div className="mb-1.5 text-[11px] font-medium text-[var(--text)]">Product Information — &quot;{objectName}&quot;</div>
+      <div className="space-y-2">
+        <ProductInfoField label="Description">
+          <textarea
+            className={`${productInputClass} h-16 resize-none`}
+            value={draft.description}
+            onChange={(e) => update('description', e.target.value)}
+          />
+        </ProductInfoField>
+        <ProductInfoField label="Installation Manual URL">
+          <input
+            className={productInputClass}
+            placeholder="https://…"
+            value={draft.installationManualUrl}
+            onChange={(e) => update('installationManualUrl', e.target.value)}
+          />
+          {!looksLikeUrl(draft.installationManualUrl) && (
+            <p className="mt-0.5 text-[10px] text-amber-400">Doesn&apos;t look like a full URL (missing http(s)://)</p>
+          )}
+        </ProductInfoField>
+        <ProductInfoField label="Product Page URL">
+          <input
+            className={productInputClass}
+            placeholder="https://…"
+            value={draft.productPageUrl}
+            onChange={(e) => update('productPageUrl', e.target.value)}
+          />
+          {!looksLikeUrl(draft.productPageUrl) && (
+            <p className="mt-0.5 text-[10px] text-amber-400">Doesn&apos;t look like a full URL (missing http(s)://)</p>
+          )}
+        </ProductInfoField>
+
+        <div className="border-t pt-2" style={{ borderColor: 'var(--panel-border)' }}>
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-faint)]">
+            Supplier Contact
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <ProductInfoField label="Supplier / Company">
+              <input className={productInputClass} value={draft.supplierName} onChange={(e) => update('supplierName', e.target.value)} />
+            </ProductInfoField>
+            <ProductInfoField label="Contact Name (optional)">
+              <input className={productInputClass} value={draft.contactName} onChange={(e) => update('contactName', e.target.value)} />
+            </ProductInfoField>
+            <ProductInfoField label="Phone">
+              <input className={productInputClass} value={draft.phone} onChange={(e) => update('phone', e.target.value)} />
+            </ProductInfoField>
+            <ProductInfoField label="Email">
+              <input
+                className={productInputClass}
+                placeholder="name@example.com"
+                value={draft.email}
+                onChange={(e) => update('email', e.target.value)}
+              />
+              {!looksLikeEmail(draft.email) && <p className="mt-0.5 text-[10px] text-amber-400">Doesn&apos;t look like an email address</p>}
+            </ProductInfoField>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-2.5 flex items-center gap-2">
+        <button
+          className="rounded bg-blue-600 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-blue-500"
+          onClick={() => {
+            setProductInfo(componentId, draft)
+            setJustSaved(true)
+          }}
+        >
+          Save Product Information
+        </button>
+        {justSaved && <span className="text-[10px] text-emerald-400">Saved</span>}
+      </div>
+    </div>
+  )
+}
+
+function ProductInfoSection() {
+  const selectedComponentIds = useAppStore((s) => s.selectedComponentIds)
+  if (selectedComponentIds.length !== 1) return null
+  return <ProductInfoFields key={selectedComponentIds[0]} componentId={selectedComponentIds[0]} />
+}
+
 function FaceSelectionAssignment() {
   const faceSelectComponentId = useAppStore((s) => s.faceSelectComponentId)
   const faceSelectedFaceIndices = useAppStore((s) => s.faceSelectedFaceIndices)
@@ -469,6 +589,7 @@ export function ObjectTreePanel() {
             <TreeRow node={objectTree} depth={0} query={query} />
           </div>
           <SelectionAssignment />
+          <ProductInfoSection />
           <FaceSelectionAssignment />
           <FbxMaterialsSection />
         </>
