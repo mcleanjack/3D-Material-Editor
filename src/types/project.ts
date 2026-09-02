@@ -1,4 +1,5 @@
 import type { EdgeSettings, ExportSettings } from './scene'
+import type { TreeFolder } from './folder'
 
 /** A saved authoring session. The source FBX itself is NOT re-embedded here — only a
  * reference/name — because it can be large; the user re-imports the same FBX to resume. */
@@ -16,6 +17,13 @@ export interface AuthoringProject {
   faceMaterialAssignments: Record<string, Record<number, string>>
   /** componentId -> visible */
   visibility: Record<string, boolean>
+
+  /** Object Tree folder-grouping layer (see src/types/folder.ts) — an authoring-tool
+   * organizational layer only, never written into GLB export. Optional for backward
+   * compatibility with projects saved before this feature existed. */
+  folders?: Record<string, TreeFolder>
+  /** componentId -> id of the folder directly containing it. */
+  folderMembership?: Record<string, string>
 
   edgeSettings: EdgeSettings
   exportSettings: ExportSettings
