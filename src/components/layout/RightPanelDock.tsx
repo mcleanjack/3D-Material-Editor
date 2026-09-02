@@ -4,6 +4,7 @@ import { ObjectTreePanel } from '../panels/ObjectTreePanel'
 import { MaterialLibraryPanel } from '../panels/MaterialLibraryPanel'
 import { MaterialEditorPanel } from '../panels/MaterialEditorPanel'
 import { EdgeSettingsPanel } from '../panels/EdgeSettingsPanel'
+import { SunSettingsPanel } from '../panels/SunSettingsPanel'
 
 const RAIL_ITEMS: { key: RightPanelKey; icon: IconName; label: string }[] = [
   { key: 'objectTree', icon: 'tree', label: 'Object Tree' },
@@ -21,6 +22,7 @@ export function RightPanelDock() {
       {activeRightPanel === 'materials' && <MaterialLibraryPanel />}
       {activeRightPanel === 'materialEditor' && <MaterialEditorPanel />}
       {activeRightPanel === 'edgeSettings' && <EdgeSettingsPanel />}
+      {activeRightPanel === 'sun' && <SunSettingsPanel />}
 
       <div
         className="flex w-11 shrink-0 flex-col items-center gap-1 border-l py-2"

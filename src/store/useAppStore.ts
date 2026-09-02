@@ -4,6 +4,8 @@ import type { ObjectMeta, EdgeSettings, ExportSettings } from '../types/scene'
 import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings } from '../types/scene'
 import type { ObjectTreeNode } from '../types/tree'
 import type { TreeFolder } from '../types/folder'
+import type { SunSettings } from '../types/sun'
+import { DEFAULT_SUN_SETTINGS } from '../types/sun'
 import { importFbx } from '../three/fbxImport'
 import { SceneManager, type ProjectionMode } from '../three/SceneManager'
 import { EdgePreviewController } from '../three/edges/fatLineEdges'
@@ -13,7 +15,7 @@ import { useMaterialLibraryStore } from './useMaterialLibraryStore'
 import { makeId } from '../utils/id'
 
 export type ActiveTool = 'select' | 'orbit' | 'pan' | 'zoom' | 'measure' | 'faceSelect'
-export type RightPanelKey = 'objectTree' | 'materials' | 'materialEditor' | 'edgeSettings' | null
+export type RightPanelKey = 'objectTree' | 'materials' | 'materialEditor' | 'edgeSettings' | 'sun' | null
 
 /** componentId -> canonical face index -> assigned custom material id. Serializable as-is for
  * project save/restore. */
@@ -66,6 +68,9 @@ interface AppState {
   // Edge system
   edgeSettings: EdgeSettings
 
+  // Sun (viewport-only lighting/shadow preview — see src/types/sun.ts)
+  sunSettings: SunSettings
+
   // Export
   exportSettings: ExportSettings
 
@@ -113,6 +118,7 @@ interface AppState {
   resetCamera: () => void
 
   setEdgeSettings: (partial: Partial<EdgeSettings>) => void
+  setSunSettings: (partial: Partial<SunSettings>) => void
   setExportSettings: (partial: Partial<ExportSettings>) => void
 
   setActiveRightPanel: (panel: RightPanelKey) => void
@@ -198,6 +204,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   axesVisible: true,
 
   edgeSettings: { ...DEFAULT_EDGE_SETTINGS },
+  sunSettings: { ...DEFAULT_SUN_SETTINGS },
   exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
 
   activeRightPanel: 'objectTree',
@@ -240,6 +247,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       sm?.setFaceHighlight(null, [])
       sm?.fitToScreen()
       get().setEdgeSettings({})
+      get().setSunSettings({})
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown FBX import error'
       set({ importing: false, importError: message, statusMessage: `Import failed: ${message}` })
@@ -619,6 +627,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!modelRoot || !edgePreview) return
     edgePreview.applyAppearance(merged)
     edgePreview.rebuild(modelRoot, merged.angleThreshold, merged.enabled)
+  },
+
+  setSunSettings: (partial) => {
+    const merged = { ...get().sunSettings, ...partial }
+    set({ sunSettings: merged })
+    get().sceneManager?.applySunSettings(merged)
   },
 
   setExportSettings: (partial) => set((s) => ({ exportSettings: { ...s.exportSettings, ...partial } })),

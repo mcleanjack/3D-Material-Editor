@@ -1,5 +1,6 @@
 import type { EdgeSettings, ExportSettings } from './scene'
 import type { TreeFolder } from './folder'
+import type { SunSettings } from './sun'
 
 /** A saved authoring session. The source FBX itself is NOT re-embedded here — only a
  * reference/name — because it can be large; the user re-imports the same FBX to resume. */
@@ -27,6 +28,10 @@ export interface AuthoringProject {
 
   edgeSettings: EdgeSettings
   exportSettings: ExportSettings
+  /** Viewport-only sun/shadow preview (see src/types/sun.ts) — deliberately kept as its own
+   * field, separate from material/export data. Optional for backward compatibility with
+   * projects saved before this feature existed. */
+  sunSettings?: SunSettings
 
   camera: {
     position: [number, number, number]

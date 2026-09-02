@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { COMPONENT_ID_KEY, isAuxiliaryMesh } from '../types/scene'
+import type { SunSettings } from '../types/sun'
 import { getCanonicalGeometry, getFaceCount, getFaceLocalPositions, toCanonicalFaceIndex } from './faceMaterials'
 
 export type ProjectionMode = 'perspective' | 'orthographic'
@@ -16,6 +17,14 @@ const FACE_HIGHLIGHT_COLOR = 0xff5fa8
  * this is a backstop against pathological cases (a huge box over a very dense mesh), not the
  * common case. */
 const MARQUEE_FACE_COUNT_LIMIT = 250000
+
+/** Default sun shadow-map resolution. Backed off automatically for larger models — see
+ * `setModel()` — so enabling shadows doesn't tank frame rate on a dense Revit export. */
+const SHADOW_MAP_SIZE_DEFAULT = 2048
+const SHADOW_MAP_SIZE_LARGE = 1536
+const SHADOW_MAP_SIZE_HUGE = 1024
+const SHADOW_MAP_LARGE_TRIANGLE_THRESHOLD = 500_000
+const SHADOW_MAP_HUGE_TRIANGLE_THRESHOLD = 1_500_000
 
 export interface FaceHit {
   mesh: THREE.Mesh
@@ -46,6 +55,18 @@ export class SceneManager {
   private readonly grid: THREE.GridHelper
   private readonly axes: THREE.AxesHelper
 
+  /** "Sun" preview light — see src/types/sun.ts. Off by default (invisible, not just dim), so
+   * with the sun disabled the scene renders under exactly the same hemi/key/fill lighting as
+   * before this feature existed. */
+  private readonly sunLight: THREE.DirectionalLight
+  private readonly sunTarget = new THREE.Object3D()
+  /** Shadow-catcher ground plane — a THREE.ShadowMaterial renders nothing except where a shadow
+   * falls on it, so it stays visually unobtrusive. Viewport-only: added directly to `scene`, not
+   * `modelGroup`, so export (which only ever clones modelGroup's own child) never sees it. */
+  private readonly groundPlane: THREE.Mesh
+  private modelBox: THREE.Box3 | null = null
+  private shadowMapSize = SHADOW_MAP_SIZE_DEFAULT
+
   private container: HTMLElement | null = null
   private resizeObserver: ResizeObserver | null = null
   private rafId = 0
@@ -64,6 +85,23 @@ export class SceneManager {
     fill.position.set(-6, 4, -6)
     this.scene.add(hemi, key, fill)
 
+    // Plain white/neutral — no colour control per spec. Starts invisible; setModel()/
+    // applySunSettings() position it and size its shadow frustum once a model + settings exist.
+    this.sunLight = new THREE.DirectionalLight(0xffffff, 3)
+    this.sunLight.visible = false
+    this.sunLight.castShadow = false
+    this.sunLight.shadow.mapSize.set(this.shadowMapSize, this.shadowMapSize)
+    this.sunLight.target = this.sunTarget
+    this.scene.add(this.sunLight, this.sunTarget)
+
+    this.groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShadowMaterial({ opacity: 0.35 }))
+    this.groundPlane.name = '__ViewportShadowGround__'
+    this.groundPlane.rotation.x = -Math.PI / 2
+    this.groundPlane.receiveShadow = true
+    this.groundPlane.castShadow = false
+    this.groundPlane.visible = false
+    this.scene.add(this.groundPlane)
+
     this.grid = new THREE.GridHelper(20, 20, 0x555862, 0x3a3d45)
     this.axes = new THREE.AxesHelper(1.5)
     this.scene.add(this.grid, this.axes)
@@ -79,6 +117,15 @@ export class SceneManager {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.0
+    // Off by default — turned on only while the sun + its shadows are both enabled, in
+    // applySunSettings(). PCFShadowMap for a clean, non-jagged look on architectural detail: in
+    // this three.js version PCFSoftShadowMap is a deprecated alias for it (three.js itself warns
+    // and silently falls back), and PCFShadowMap already does soft, radius-adjustable filtering
+    // (light.shadow.radius drives the blur — see the Shadow Softness slider) without VSMShadowMap's
+    // side effect of forcing every shadow *receiver* to also render into the shadow pass as a
+    // caster (which would needlessly pull the shadow-catcher ground plane into that pass).
+    this.renderer.shadowMap.enabled = false
+    this.renderer.shadowMap.type = THREE.PCFShadowMap
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
     this.controls.enableDamping = true
@@ -140,6 +187,108 @@ export class SceneManager {
   setModel(root: THREE.Group | null) {
     this.modelGroup.clear()
     if (root) this.modelGroup.add(root)
+
+    if (!root) {
+      this.modelBox = null
+      return
+    }
+
+    let triangleCount = 0
+    root.traverse((obj) => {
+      const mesh = obj as THREE.Mesh
+      if (!mesh.isMesh || isAuxiliaryMesh(mesh)) return
+      // Real model geometry casts and receives shadows from other components (e.g. a parapet
+      // shadowing the floor below). Auxiliary viewport-only meshes (edge preview lines, face
+      // highlight overlays — the live-viewport analogue of the export-only __COMPONENT_EDGES__
+      // mesh, which doesn't exist in this scene graph) are skipped: thin line/overlay geometry is
+      // prone to shadow acne and isn't meant to represent real physical geometry.
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      const geom = mesh.geometry
+      const triCount = geom.index ? geom.index.count / 3 : (geom.attributes.position?.count ?? 0) / 3
+      triangleCount += triCount
+    })
+
+    this.shadowMapSize =
+      triangleCount > SHADOW_MAP_HUGE_TRIANGLE_THRESHOLD
+        ? SHADOW_MAP_SIZE_HUGE
+        : triangleCount > SHADOW_MAP_LARGE_TRIANGLE_THRESHOLD
+          ? SHADOW_MAP_SIZE_LARGE
+          : SHADOW_MAP_SIZE_DEFAULT
+    this.sunLight.shadow.mapSize.set(this.shadowMapSize, this.shadowMapSize)
+    // A shadow map's render target isn't resized in place — it must be disposed so the renderer
+    // regenerates one at the new mapSize on the next frame.
+    this.sunLight.shadow.map?.dispose()
+    this.sunLight.shadow.map = null
+
+    this.recomputeModelBox()
+  }
+
+  private recomputeModelBox() {
+    const box = new THREE.Box3().setFromObject(this.modelGroup)
+    this.modelBox = box.isEmpty() ? null : box
+    this.updateGroundPlane()
+  }
+
+  private updateGroundPlane() {
+    if (!this.modelBox) return
+    const size = this.modelBox.getSize(new THREE.Vector3())
+    const center = this.modelBox.getCenter(new THREE.Vector3())
+    // Generous margin so the shadow catcher stays under the model as the sun swings around and
+    // casts long, low-elevation shadows, without needing to rebuild geometry per model.
+    const span = Math.max(size.x, size.z, 1) * 6
+    this.groundPlane.scale.set(span, span, 1)
+    // Nudged a hair below the grid (which sits exactly at box.min.y) to avoid z-fighting between
+    // the two coplanar helpers.
+    const epsilon = Math.max(size.length() * 0.0005, 0.001)
+    this.groundPlane.position.set(center.x, this.modelBox.min.y - epsilon, center.z)
+  }
+
+  /** Applies Sun panel settings to the live viewport in real time — visibility, brightness,
+   * shadow on/off, direction/elevation, and the shadow camera frustum (fit to the model's actual
+   * bounding box rather than a fixed size, so shadow resolution stays sharp on both a small
+   * bracket detail and a large balcony assembly). Purely a scene-graph/renderer change: never
+   * touches material data, and (since it only ever touches objects added directly to `scene`,
+   * never `modelGroup`) has no effect on GLB export. */
+  applySunSettings(settings: SunSettings) {
+    const light = this.sunLight
+    light.visible = settings.enabled
+    light.intensity = settings.intensity
+    light.castShadow = settings.enabled && settings.shadowsEnabled
+    light.shadow.radius = settings.shadowSoftness
+    this.renderer.shadowMap.enabled = settings.enabled && settings.shadowsEnabled
+    this.groundPlane.visible = settings.enabled && settings.shadowsEnabled
+
+    if (!settings.enabled) return
+
+    const box = this.modelBox
+    const center = box ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0)
+    const radius = box ? Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1) : 10
+
+    const azimuthRad = THREE.MathUtils.degToRad(settings.azimuth)
+    const elevationRad = THREE.MathUtils.degToRad(Math.max(settings.elevation, 0.01))
+    const direction = new THREE.Vector3(
+      Math.cos(elevationRad) * Math.sin(azimuthRad),
+      Math.sin(elevationRad),
+      Math.cos(elevationRad) * Math.cos(azimuthRad),
+    )
+    const distance = radius * 2.5
+    light.position.copy(center).addScaledVector(direction, distance)
+    this.sunTarget.position.copy(center)
+    this.sunTarget.updateMatrixWorld()
+
+    // normalBias (a world-space offset along the surface normal) suppresses shadow acne
+    // consistently across very different model scales, unlike a fixed depth `bias`.
+    light.shadow.normalBias = Math.max(radius * 0.0015, 0.001)
+
+    const cam = light.shadow.camera
+    cam.left = -radius * 1.15
+    cam.right = radius * 1.15
+    cam.top = radius * 1.15
+    cam.bottom = -radius * 1.15
+    cam.near = Math.max(distance - radius * 1.5, 0.05)
+    cam.far = distance + radius * 1.5
+    cam.updateProjectionMatrix()
   }
 
   setWireframe(enabled: boolean) {
@@ -181,6 +330,7 @@ export class SceneManager {
     this.handleResize()
 
     this.grid.position.y = box.min.y
+    if (target === this.modelGroup) this.recomputeModelBox()
   }
 
   resetCamera() {
