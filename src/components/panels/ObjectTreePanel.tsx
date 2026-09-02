@@ -99,6 +99,61 @@ function SelectionAssignment() {
   )
 }
 
+function FaceSelectionAssignment() {
+  const faceSelectComponentId = useAppStore((s) => s.faceSelectComponentId)
+  const faceSelectedFaceIndices = useAppStore((s) => s.faceSelectedFaceIndices)
+  const faceMaterialAssignments = useAppStore((s) => s.faceMaterialAssignments)
+  const objectMeta = useAppStore((s) => s.objectMeta)
+  const assignMaterialToFaceSelection = useAppStore((s) => s.assignMaterialToFaceSelection)
+  const clearFaceSelection = useAppStore((s) => s.clearFaceSelection)
+  const [pending, setPending] = useState<string | null | undefined>(undefined)
+
+  if (!faceSelectComponentId || faceSelectedFaceIndices.size === 0) return null
+
+  const objectName = objectMeta.get(faceSelectComponentId)?.name ?? faceSelectComponentId
+  const overridesForObject = faceMaterialAssignments[faceSelectComponentId]
+  const selectedIds = Array.from(faceSelectedFaceIndices)
+  // Only pre-fill the picker with the current assignment when every selected face already
+  // shares the exact same override — otherwise leave it blank rather than implying one.
+  const uniformAssignment = overridesForObject
+    ? selectedIds.every((f) => overridesForObject[f] === overridesForObject[selectedIds[0]])
+      ? overridesForObject[selectedIds[0]] ?? null
+      : null
+    : null
+  const effective = pending !== undefined ? pending : uniformAssignment
+
+  return (
+    <div className="border-t px-3 py-2" style={{ borderColor: 'var(--panel-border)' }} data-testid="face-selection-assignment">
+      <div className="mb-1.5 text-[11px] font-medium text-[var(--text)]">
+        SELECTED: {faceSelectedFaceIndices.size} face{faceSelectedFaceIndices.size > 1 ? 's' : ''} on &quot;{objectName}&quot;
+      </div>
+      <div className="mb-1.5 flex gap-1.5">
+        <MaterialPicker value={effective} onChange={setPending} className="flex-1" />
+        <button
+          className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-500"
+          onClick={() => void assignMaterialToFaceSelection(effective)}
+        >
+          Apply
+        </button>
+      </div>
+      <div className="flex gap-1.5">
+        <button
+          className="flex-1 rounded bg-[#2a2c33] px-2 py-1 text-[11px] text-[var(--text)] hover:bg-[#33353d]"
+          onClick={() => void assignMaterialToFaceSelection(null)}
+        >
+          Reset to base material
+        </button>
+        <button
+          className="rounded bg-[#2a2c33] px-2 py-1 text-[11px] text-[var(--text-dim)] hover:bg-[#33353d]"
+          onClick={clearFaceSelection}
+        >
+          Clear selection
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function FbxMaterialsSection() {
   const fbxMaterialNames = useAppStore((s) => s.fbxMaterialNames)
   const assignMaterialToFbxMaterialName = useAppStore((s) => s.assignMaterialToFbxMaterialName)
@@ -167,6 +222,7 @@ export function ObjectTreePanel() {
             <TreeRow node={objectTree} depth={0} query={query} />
           </div>
           <SelectionAssignment />
+          <FaceSelectionAssignment />
           <FbxMaterialsSection />
         </>
       )}

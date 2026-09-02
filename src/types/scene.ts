@@ -42,3 +42,13 @@ export interface ObjectMeta {
 
 export const COMPONENT_ID_KEY = 'componentId'
 export const EDGES_EXPORT_NAME = '__COMPONENT_EDGES__'
+
+/** userData keys stamped on viewport-only helper meshes (edge preview lines, face-selection
+ * highlight overlays). Both extend THREE.Mesh under the hood (LineSegments2 does too), so any
+ * code that walks the live model tree looking for "real" meshes — to reapply materials, raycast
+ * for selection, export, etc. — must skip these or it will treat UI chrome as model geometry. */
+export const AUX_MESH_KEYS = ['isEdgePreviewLine', 'isFaceHighlight'] as const
+
+export function isAuxiliaryMesh(obj: { userData: Record<string, unknown> }): boolean {
+  return AUX_MESH_KEYS.some((key) => obj.userData[key] === true)
+}

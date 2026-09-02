@@ -30,6 +30,7 @@ function RailButton({
 
 const TOOLS: { tool: ActiveTool; icon: IconName; label: string }[] = [
   { tool: 'select', icon: 'select', label: 'Select' },
+  { tool: 'faceSelect', icon: 'face', label: 'Face Select — click a face, shift-click to add, shift-drag to box-select' },
   { tool: 'orbit', icon: 'orbit', label: 'Orbit' },
   { tool: 'pan', icon: 'pan', label: 'Pan' },
   { tool: 'zoom', icon: 'zoom', label: 'Zoom' },

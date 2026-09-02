@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { COMPONENT_ID_KEY, type ObjectMeta } from '../types/scene'
 import type { ObjectTreeNode } from '../types/tree'
+import { setCanonicalGeometry } from './faceMaterials'
 
 export interface FbxImportResult {
   root: THREE.Group
@@ -42,6 +43,7 @@ export async function importFbx(file: File): Promise<FbxImportResult> {
     if (isMesh) {
       const mesh = obj as THREE.Mesh
       mesh.userData.originalMaterial = mesh.material
+      setCanonicalGeometry(mesh, mesh.geometry)
       fbxMaterialNames = collectMaterialNames(mesh)
       fbxMaterialNames.forEach((n) => materialNameSet.add(n))
     }

@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { getEdgesGeometry } from './edgeGeneration'
-import { EDGES_EXPORT_NAME, type EdgeSettings } from '../../types/scene'
+import { EDGES_EXPORT_NAME, isAuxiliaryMesh, type EdgeSettings } from '../../types/scene'
 
 /** Meters of tube radius per unit of "Edge Line Weight" (which is specified in the UI as an
  * approximate 1-5px screen-space value). glTF has no notion of screen-space line width, so
@@ -72,7 +72,7 @@ export function buildExportEdgesMesh(modelGroup: THREE.Group, settings: EdgeSett
 
   modelGroup.traverse((obj) => {
     const mesh = obj as THREE.Mesh
-    if (!mesh.isMesh || !mesh.geometry || !mesh.visible || mesh.userData.isEdgePreviewLine) return
+    if (!mesh.isMesh || !mesh.geometry || !mesh.visible || isAuxiliaryMesh(mesh)) return
 
     const edgesGeom = getEdgesGeometry(mesh.geometry, settings.angleThreshold)
     const arr = edgesGeom.attributes.position.array as Float32Array

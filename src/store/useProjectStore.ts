@@ -42,6 +42,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       updatedAt: now,
       sourceFbxName: app.fbxFileName ?? '',
       materialAssignments: app.materialAssignments,
+      faceMaterialAssignments: app.faceMaterialAssignments,
       visibility: Object.fromEntries(Array.from(app.objectMeta.keys()).map((k) => [k, !app.hiddenComponentIds.has(k)])),
       edgeSettings: app.edgeSettings,
       exportSettings: app.exportSettings,
@@ -73,6 +74,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // Same source already loaded — reapply assignments/visibility directly.
       useAppStore.setState({
         materialAssignments: project.materialAssignments,
+        faceMaterialAssignments: project.faceMaterialAssignments ?? {},
         hiddenComponentIds: new Set(
           Object.entries(project.visibility)
             .filter(([, visible]) => !visible)

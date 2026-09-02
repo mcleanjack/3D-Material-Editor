@@ -36,6 +36,7 @@ export type IconName =
   | 'warning'
   | 'mesh'
   | 'group'
+  | 'face'
 
 const paths: Record<IconName, string> = {
   select: 'M4 3l6.5 16 2-6.5L19 10.5z',
@@ -75,6 +76,7 @@ const paths: Record<IconName, string> = {
   warning: 'M12 3l10 18H2zM12 10v5M12 18h.01',
   mesh: 'M4 4l8-2 8 2v8l-8 8-8-8z M4 4l8 6 8-6 M12 10v10',
   group: 'M4 4h7v7H4zM13 13h7v7h-7zM4 13h5v5H4zM15 4h5v5h-5z',
+  face: 'M4 6l16-2v14L4 20z M4 6l16 12 M4 20l16-14',
 }
 
 export function Icon({ name, size = 16, className }: { name: IconName; size?: number; className?: string }) {

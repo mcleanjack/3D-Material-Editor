@@ -8,6 +8,14 @@ export interface GlbValidationReport {
   materialsWithTextures: number
   hasEdgesObject: boolean
   edgesTriangleCount: number
+  /** Objects that survived export/reload as a per-face material split. GLTFExporter writes a
+   * multi-material mesh as one glTF mesh with several primitives (one per BufferGeometry group);
+   * GLTFLoader in turn re-loads each primitive as its own single-material THREE.Mesh and wraps
+   * the set in a plain THREE.Group — so on the *reloaded* scene, "still multi-material" shows up
+   * as a Group whose direct children are all meshes, not as an array on `.material` (that array
+   * only exists pre-export, on the live authoring scene). */
+  multiMaterialObjectCount: number
+  totalPrimitivesFromSplitObjects: number
   objectNames: string[]
   scene: THREE.Group
 }
@@ -25,11 +33,19 @@ export async function validateGlb(blob: Blob): Promise<GlbValidationReport> {
     let meshCount = 0
     let hasEdgesObject = false
     let edgesTriangleCount = 0
+    let multiMaterialObjectCount = 0
+    let totalPrimitivesFromSplitObjects = 0
     const materials = new Set<THREE.Material>()
     const objectNames: string[] = []
 
     scene.traverse((obj) => {
       objectNames.push(obj.name || '(unnamed)')
+
+      if (obj.type === 'Group' && obj.children.length > 1 && obj.children.every((c) => (c as THREE.Mesh).isMesh)) {
+        multiMaterialObjectCount++
+        totalPrimitivesFromSplitObjects += obj.children.length
+      }
+
       const mesh = obj as THREE.Mesh
       if (!mesh.isMesh) return
       meshCount++
@@ -55,6 +71,8 @@ export async function validateGlb(blob: Blob): Promise<GlbValidationReport> {
       materialsWithTextures,
       hasEdgesObject,
       edgesTriangleCount,
+      multiMaterialObjectCount,
+      totalPrimitivesFromSplitObjects,
       objectNames,
       scene,
     }

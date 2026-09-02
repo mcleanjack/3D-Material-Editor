@@ -3,6 +3,7 @@ import { useMaterialLibraryStore } from '../../store/useMaterialLibraryStore'
 
 const TOOL_LABELS: Record<string, string> = {
   select: 'Select — click an object to select it, shift-click to add to selection',
+  faceSelect: 'Face Select — click a face to select it, shift-click to add, shift-drag to box-select faces on one object',
   orbit: 'Orbit — drag to rotate the view',
   pan: 'Pan — drag to pan the view',
   zoom: 'Zoom — scroll or drag to zoom',
@@ -17,6 +18,8 @@ export function StatusBar() {
   const objectMeta = useAppStore((s) => s.objectMeta)
   const materialAssignments = useAppStore((s) => s.materialAssignments)
   const applyingMaterials = useAppStore((s) => s.applyingMaterials)
+  const faceSelectComponentId = useAppStore((s) => s.faceSelectComponentId)
+  const faceSelectedFaceIndices = useAppStore((s) => s.faceSelectedFaceIndices)
   const getMaterial = useMaterialLibraryStore((s) => s.getById)
 
   const infoId = hoveredComponentId ?? selectedComponentIds[selectedComponentIds.length - 1] ?? null
@@ -44,6 +47,12 @@ export function StatusBar() {
       <div className="flex-1" />
 
       {selectedComponentIds.length > 0 && <span>{selectedComponentIds.length} selected</span>}
+      {faceSelectComponentId && faceSelectedFaceIndices.size > 0 && (
+        <span>
+          {faceSelectedFaceIndices.size} face{faceSelectedFaceIndices.size > 1 ? 's' : ''} selected on{' '}
+          {objectMeta.get(faceSelectComponentId)?.name ?? faceSelectComponentId}
+        </span>
+      )}
 
       <span className="truncate">{statusMessage}</span>
     </div>

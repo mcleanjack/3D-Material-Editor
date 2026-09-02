@@ -12,6 +12,8 @@ export interface AuthoringProject {
 
   /** componentId -> assigned custom material id */
   materialAssignments: Record<string, string>
+  /** componentId -> canonical face index -> assigned custom material id */
+  faceMaterialAssignments: Record<string, Record<number, string>>
   /** componentId -> visible */
   visibility: Record<string, boolean>
 

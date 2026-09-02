@@ -20,6 +20,12 @@ Import FBX → identify objects & original FBX materials → create custom mater
 The custom material library starts empty — there are no built-in/default materials. Everything
 in it is something you created.
 
+Materials can be assigned per object (or per group, cascading to every mesh inside it) or per
+face: switch to the **Face Select** tool to click, shift-click, or shift-drag (marquee) a set of
+triangles on one object and assign a material to just that selection — the rest of the object
+keeps its own material. A face override can be reset back to the object's base material without
+touching any other face.
+
 ## Running it
 
 ```bash
@@ -53,14 +59,32 @@ npm run lint       # oxlint
   cloned) so export-only settings (materials/textures on-off) never touch the live editor state.
   Skinned meshes are cloned with `SkeletonUtils.clone` rather than a plain `Object3D.clone`, which
   otherwise leaves a `SkinnedMesh`'s skeleton pointing at the original (non-cloned) bones.
+- **Face-level material assignment** (`src/three/faceMaterials.ts`): every imported mesh keeps its
+  untouched original geometry as `userData.canonicalGeometry`; all face indices in app state
+  (selection, saved assignments) are relative to that canonical face order, which never changes.
+  Assigning a material to a face selection reorders a *derived* geometry so same-material faces
+  are contiguous, adds one `BufferGeometry.group` per material, and sets `mesh.material` to the
+  matching array — the standard three.js/glTF multi-material representation, so it needs no
+  special-casing on export (`GLTFExporter` already emits one glTF primitive per group) or import.
+  A mapping from the derived geometry's (reordered) face indices back to canonical ones lets
+  raycast hits — including the marquee tool's per-face occlusion test — resolve correctly no
+  matter how many times a mesh has been re-split. Objects with no face override never have their
+  geometry touched at all.
 
 ## Testing notes
 
-The full workflow (create material → import FBX → assign material incl. group-level cascade →
-configure edges → export GLB → reload via `GLTFLoader` and validate mesh/material/edge counts) was
-exercised end-to-end in a real Chromium browser. No Revit-exported FBX was available in this
-environment, so the FBX import/hierarchy/material-identification path was validated against a
-real, non-Revit binary FBX (three.js's own "Samba Dancing" sample) instead — it exercises the same
-`FBXLoader` parsing path (hierarchy, named materials, transforms) that a Revit export would, but a
-Revit file should still be used to confirm Revit-specific conventions (family/type naming, units)
-before relying on this in production.
+The full workflow (create material → import FBX → assign material incl. group-level cascade and
+per-face overrides via click/shift-click/marquee → reset a face override back to base → configure
+edges → export GLB → reload via `GLTFLoader` and validate mesh/material/edge/multi-material-split
+counts) was exercised end-to-end in a real Chromium browser, with zero console errors. No
+Revit-exported FBX was available in this environment, so the FBX import/hierarchy/material path
+was validated against a real, non-Revit binary FBX (three.js's own "Samba Dancing" sample) instead
+— it exercises the same `FBXLoader` parsing path (hierarchy, named materials, transforms, and —
+usefully for the face-material work — a genuinely dense, real-world triangle count) that a Revit
+export would, but a Revit file should still be used to confirm Revit-specific conventions
+(family/type naming, units) before relying on this in production.
+
+One thing not separately exercised live: face-level assignments persisting through a full project
+save → reload cycle. The save/load code path is a direct extension of the already-tested
+whole-object `materialAssignments` handling (same IndexedDB project record, one more field), but
+it's worth a manual check before depending on it.

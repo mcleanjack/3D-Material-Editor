@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
-import type { EdgeSettings } from '../../types/scene'
+import { isAuxiliaryMesh, type EdgeSettings } from '../../types/scene'
 import { getEdgesGeometry } from './edgeGeneration'
 
 const EDGE_LINE_NAME = '__edge_preview_line__'
@@ -55,7 +55,7 @@ export class EdgePreviewController {
     const targets: THREE.Mesh[] = []
     modelGroup.traverse((obj) => {
       const mesh = obj as THREE.Mesh
-      if (!mesh.isMesh || !mesh.geometry || mesh.userData.isEdgePreviewLine) return
+      if (!mesh.isMesh || !mesh.geometry || isAuxiliaryMesh(mesh)) return
       targets.push(mesh)
     })
 

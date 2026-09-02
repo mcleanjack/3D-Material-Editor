@@ -22,6 +22,14 @@ export function ExportReportModal({ report, fileName, onClose }: { report: GlbVa
             label="__COMPONENT_EDGES__ object"
             value={report.hasEdgesObject ? `Present (${report.edgesTriangleCount.toLocaleString()} tris)` : 'Not included'}
           />
+          <Row
+            label="Multi-material (face-split) objects"
+            value={
+              report.multiMaterialObjectCount > 0
+                ? `${report.multiMaterialObjectCount} (${report.totalPrimitivesFromSplitObjects} material groups total)`
+                : 'None'
+            }
+          />
         </dl>
         <div className="flex justify-end">
           <Button variant="primary" onClick={onClose}>
