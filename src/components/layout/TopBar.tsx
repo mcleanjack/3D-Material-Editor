@@ -23,6 +23,8 @@ export function TopBar() {
   const exportSettings = useAppStore((s) => s.exportSettings)
   const productInfo = useAppStore((s) => s.productInfo)
   const objectMeta = useAppStore((s) => s.objectMeta)
+  const folders = useAppStore((s) => s.folders)
+  const folderMembership = useAppStore((s) => s.folderMembership)
   const setStatusMessage = useAppStore((s) => s.setStatusMessage)
 
   const projectName = useProjectStore((s) => s.currentProjectName)
@@ -52,6 +54,8 @@ export function TopBar() {
         modelGroup: sceneManager.modelGroup,
         exportSettings,
         edgeSettings,
+        folders,
+        folderMembership,
       })
       downloadBlob(blob, `${baseName}.glb`)
 

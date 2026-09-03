@@ -4,6 +4,7 @@ import type { ObjectMeta, EdgeSettings, ExportSettings } from '../types/scene'
 import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings } from '../types/scene'
 import type { ObjectTreeNode } from '../types/tree'
 import type { TreeFolder } from '../types/folder'
+import { collectFolderComponentIds, getBuildStageFolders } from '../types/folder'
 import type { SunSettings } from '../types/sun'
 import { DEFAULT_SUN_SETTINGS } from '../types/sun'
 import type { ProductInfo } from '../types/product'
@@ -106,6 +107,16 @@ interface AppState {
   toggleFolderVisibility: (folderId: string) => void
   selectFolderContents: (folderId: string, additive?: boolean) => void
 
+  /** Marks/unmarks a folder as a build stage — see src/types/folder.ts. Marking assigns the
+   * next free stage order (current max + 1); unmarking clears it. */
+  setFolderBuildStage: (folderId: string, isStage: boolean) => void
+  /** Swaps this stage's order with its immediate neighbor in stage sequence — the up/down
+   * reorder control in the Build Stages list. */
+  moveBuildStageOrder: (folderId: string, direction: 'up' | 'down') => void
+  /** Selects a folder's contents and isolates them — the stage preview/stepper reuses this
+   * exact isolate path rather than any new visibility system. */
+  isolateFolder: (folderId: string) => void
+
   assignMaterialToComponents: (materialId: string | null, componentIds: string[]) => Promise<void>
   assignMaterialToFbxMaterialName: (materialId: string | null, fbxMaterialName: string) => Promise<void>
   reapplyAllAssignments: () => Promise<void>
@@ -153,23 +164,6 @@ function applyVisibility(root: THREE.Object3D, hidden: Set<string>, isolate: Set
 }
 
 let isolateSet: Set<string> | null = null
-
-/** All componentIds contained by a folder, including via nested subfolders. Pure/read-only —
- * used both by store actions (visibility, selection) and by the tree UI (indicator state). */
-export function collectFolderComponentIds(
-  folders: Record<string, TreeFolder>,
-  folderMembership: Record<string, string>,
-  folderId: string,
-): string[] {
-  const ids: string[] = []
-  for (const [componentId, fid] of Object.entries(folderMembership)) {
-    if (fid === folderId) ids.push(componentId)
-  }
-  for (const folder of Object.values(folders)) {
-    if (folder.parentId === folderId) ids.push(...collectFolderComponentIds(folders, folderMembership, folder.id))
-  }
-  return ids
-}
 
 /** True if `folderId` is `maybeAncestorId` itself, or nested inside it — used to reject a
  * folder-into-folder drag that would create a cycle. */
@@ -438,6 +432,46 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { selectedComponentIds: Array.from(nextSet) }
     })
     get().sceneManager?.setSelection(get().selectedComponentIds)
+  },
+
+  setFolderBuildStage: (folderId, isStage) => {
+    set((s) => {
+      const folder = s.folders[folderId]
+      if (!folder) return {}
+      if (isStage) {
+        if (folder.buildStageOrder !== undefined) return {} // already a stage
+        const existingOrders = getBuildStageFolders(s.folders).map((f) => f.buildStageOrder!)
+        const nextOrder = existingOrders.length > 0 ? Math.max(...existingOrders) + 1 : 1
+        return { folders: { ...s.folders, [folderId]: { ...folder, buildStageOrder: nextOrder } } }
+      }
+      if (folder.buildStageOrder === undefined) return {}
+      const unmarked: TreeFolder = { id: folder.id, name: folder.name, parentId: folder.parentId }
+      return { folders: { ...s.folders, [folderId]: unmarked } }
+    })
+  },
+
+  moveBuildStageOrder: (folderId, direction) => {
+    set((s) => {
+      const stages = getBuildStageFolders(s.folders)
+      const idx = stages.findIndex((f) => f.id === folderId)
+      if (idx === -1) return {}
+      const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+      if (swapIdx < 0 || swapIdx >= stages.length) return {}
+      const a = stages[idx]
+      const b = stages[swapIdx]
+      return {
+        folders: {
+          ...s.folders,
+          [a.id]: { ...a, buildStageOrder: b.buildStageOrder },
+          [b.id]: { ...b, buildStageOrder: a.buildStageOrder },
+        },
+      }
+    })
+  },
+
+  isolateFolder: (folderId) => {
+    get().selectFolderContents(folderId, false)
+    get().isolateSelected()
   },
 
   assignMaterialToComponents: async (materialId, componentIds) => {

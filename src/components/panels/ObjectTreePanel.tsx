@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
-import { useAppStore, collectFolderComponentIds } from '../../store/useAppStore'
+import { useAppStore } from '../../store/useAppStore'
 import type { ObjectTreeNode } from '../../types/tree'
 import type { TreeFolder } from '../../types/folder'
+import { collectFolderComponentIds, getBuildStageFolders } from '../../types/folder'
 import { EMPTY_PRODUCT_INFO, looksLikeEmail, looksLikeUrl, type ProductInfo } from '../../types/product'
 import { Icon } from '../common/Icon'
 import { PanelShell } from './PanelShell'
@@ -160,6 +161,7 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
   const deleteFolder = useAppStore((s) => s.deleteFolder)
   const moveComponentsToFolder = useAppStore((s) => s.moveComponentsToFolder)
   const moveFolderToFolder = useAppStore((s) => s.moveFolderToFolder)
+  const setFolderBuildStage = useAppStore((s) => s.setFolderBuildStage)
 
   const nodeMap = useNodeMap(objectTree)
 
@@ -176,6 +178,7 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
   const allComponentIds = collectFolderComponentIds(folders, folderMembership, folder.id)
   const hidden = allComponentIds.length > 0 && allComponentIds.every((id) => hiddenComponentIds.has(id))
   const selected = allComponentIds.length > 0 && allComponentIds.every((id) => selectedComponentIds.includes(id))
+  const isBuildStage = folder.buildStageOrder !== undefined
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
@@ -221,6 +224,24 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
         </button>
         <Icon name="folder" size={12} className="shrink-0 text-amber-400" />
         <span className="flex-1 truncate font-medium text-[var(--text)]">{folder.name}</span>
+        {isBuildStage && (
+          <span
+            title={`Build stage ${folder.buildStageOrder}`}
+            className="shrink-0 rounded bg-emerald-600/30 px-1 py-0.5 text-[9px] font-semibold text-emerald-300"
+          >
+            Stage {folder.buildStageOrder}
+          </span>
+        )}
+        <button
+          title={isBuildStage ? 'Unmark as build stage' : 'Mark as build stage'}
+          className={`shrink-0 rounded p-0.5 opacity-60 hover:opacity-100 ${isBuildStage ? 'text-emerald-400 opacity-100' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            setFolderBuildStage(folder.id, !isBuildStage)
+          }}
+        >
+          <Icon name="flag" size={11} />
+        </button>
         <button
           title="Rename folder"
           className="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100"
@@ -537,6 +558,96 @@ function FbxMaterialsSection() {
   )
 }
 
+/** Lists every build-stage folder in order, with up/down reorder controls, and a simple
+ * prev/next stepper that isolates each stage in turn by reusing the existing isolate path
+ * (isolateFolder -> selectFolderContents + isolateSelected) — no separate visibility system. */
+function BuildStagesSection() {
+  const folders = useAppStore((s) => s.folders)
+  const isolateFolder = useAppStore((s) => s.isolateFolder)
+  const exitIsolate = useAppStore((s) => s.exitIsolate)
+  const moveBuildStageOrder = useAppStore((s) => s.moveBuildStageOrder)
+  const [activeIndex, setActiveIndex] = useState<number | null>(null)
+
+  const stages = getBuildStageFolders(folders)
+  if (stages.length === 0) return null
+
+  // Defensive: stages can be reordered/deleted out from under a stale index (e.g. mid-preview).
+  const safeIndex = activeIndex !== null && activeIndex < stages.length ? activeIndex : null
+
+  function goTo(index: number) {
+    const clamped = Math.max(0, Math.min(stages.length - 1, index))
+    setActiveIndex(clamped)
+    isolateFolder(stages[clamped].id)
+  }
+
+  return (
+    <div className="border-t px-3 py-2" style={{ borderColor: 'var(--panel-border)' }}>
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-[11px] font-medium text-[var(--text)]">Build Stages ({stages.length})</span>
+        {safeIndex !== null && (
+          <button
+            className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)]"
+            onClick={() => {
+              setActiveIndex(null)
+              exitIsolate()
+            }}
+          >
+            Exit preview
+          </button>
+        )}
+      </div>
+
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <button
+          className="shrink-0 rounded bg-[#2a2c33] p-1 disabled:opacity-30"
+          disabled={safeIndex !== null && safeIndex <= 0}
+          onClick={() => goTo((safeIndex ?? 0) - 1)}
+        >
+          <Icon name="chevronRight" size={12} className="rotate-180" />
+        </button>
+        <span className="flex-1 truncate text-center text-[11px] text-[var(--text-dim)]">
+          {safeIndex === null ? 'Preview steps through stages in order' : `Stage ${safeIndex + 1} of ${stages.length}: ${stages[safeIndex].name}`}
+        </span>
+        <button
+          className="shrink-0 rounded bg-[#2a2c33] p-1 disabled:opacity-30"
+          disabled={safeIndex !== null && safeIndex >= stages.length - 1}
+          onClick={() => goTo((safeIndex ?? -1) + 1)}
+        >
+          <Icon name="chevronRight" size={12} />
+        </button>
+      </div>
+
+      <div className="space-y-1">
+        {stages.map((stage, i) => (
+          <div
+            key={stage.id}
+            className={`flex items-center gap-1.5 rounded px-1.5 py-1 text-[11px] ${safeIndex === i ? 'bg-blue-600/20' : ''}`}
+          >
+            <span className="w-4 shrink-0 text-center text-[var(--text-faint)]">{stage.buildStageOrder}</span>
+            <span className="flex-1 truncate text-[var(--text)]">{stage.name}</span>
+            <button
+              title="Move earlier"
+              className="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100 disabled:opacity-20"
+              disabled={i === 0}
+              onClick={() => moveBuildStageOrder(stage.id, 'up')}
+            >
+              <Icon name="chevronRight" size={10} className="-rotate-90" />
+            </button>
+            <button
+              title="Move later"
+              className="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100 disabled:opacity-20"
+              disabled={i === stages.length - 1}
+              onClick={() => moveBuildStageOrder(stage.id, 'down')}
+            >
+              <Icon name="chevronRight" size={10} className="rotate-90" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function ObjectTreePanel() {
   const objectTree = useAppStore((s) => s.objectTree)
   const fbxFileName = useAppStore((s) => s.fbxFileName)
@@ -588,6 +699,7 @@ export function ObjectTreePanel() {
             ))}
             <TreeRow node={objectTree} depth={0} query={query} />
           </div>
+          <BuildStagesSection />
           <SelectionAssignment />
           <ProductInfoSection />
           <FaceSelectionAssignment />
