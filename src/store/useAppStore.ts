@@ -122,6 +122,10 @@ interface AppState {
   reapplyAllAssignments: () => Promise<void>
 
   setProductInfo: (componentId: string, info: ProductInfo) => void
+  /** Applies the same ProductInfo to every given componentId in one batched update (mirrors
+   * assignMaterialToComponents' multi-select pattern) — replaces each object's existing product
+   * information, if any, with these identical values. */
+  setProductInfoForComponents: (componentIds: string[], info: ProductInfo) => void
   /** Re-stamps every stored ProductInfo onto the live model's userData.productInfo — needed
    * because the store's record survives across model re-imports/project loads but the actual
    * THREE objects it targets don't. Mirrors reapplyAllAssignments' role for material data. */
@@ -596,10 +600,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setProductInfo: (componentId, info) => {
+    get().setProductInfoForComponents([componentId], info)
+  },
+
+  setProductInfoForComponents: (componentIds, info) => {
+    if (componentIds.length === 0) return
     set((s) => {
       const next = { ...s.productInfo }
-      if (isProductInfoEmpty(info)) delete next[componentId]
-      else next[componentId] = info
+      for (const componentId of componentIds) {
+        if (isProductInfoEmpty(info)) delete next[componentId]
+        else next[componentId] = info
+      }
       return { productInfo: next }
     })
     get().reapplyProductInfo()
