@@ -368,17 +368,25 @@ function ProductInfoField({ label, children }: { label: string; children: React.
   )
 }
 
-/** Keyed by componentId from ProductInfoSection so switching the selected object remounts this
- * with fresh draft state — simpler and less error-prone than a useEffect re-sync. Edits are
- * local (draft) until Save is clicked, matching how material edits require an explicit save. */
-function ProductInfoFields({ componentId }: { componentId: string }) {
+/** Keyed by the (sorted) selected componentId set from ProductInfoSection so switching the
+ * selection — a different single object, or a different multi-select — remounts this with fresh
+ * draft state, simpler and less error-prone than a useEffect re-sync. Edits are local (draft)
+ * until Save is clicked, matching how material edits require an explicit save.
+ *
+ * With one object selected, the draft is pre-filled from its stored info and Save updates just
+ * that object. With multiple selected, the draft always starts blank (their existing info may
+ * differ, so there's no single value to show) and Save applies the same values to every selected
+ * object at once — the same "type once, apply to N" pattern already used for material
+ * assignment. */
+function ProductInfoFields({ componentIds }: { componentIds: string[] }) {
   const objectMeta = useAppStore((s) => s.objectMeta)
-  const storedInfo = useAppStore((s) => s.productInfo[componentId])
-  const setProductInfo = useAppStore((s) => s.setProductInfo)
+  const storedInfo = useAppStore((s) => (componentIds.length === 1 ? s.productInfo[componentIds[0]] : undefined))
+  const setProductInfoForComponents = useAppStore((s) => s.setProductInfoForComponents)
   const [draft, setDraft] = useState<ProductInfo>(() => storedInfo ?? EMPTY_PRODUCT_INFO)
   const [justSaved, setJustSaved] = useState(false)
 
-  const objectName = objectMeta.get(componentId)?.name ?? componentId
+  const isMulti = componentIds.length > 1
+  const objectName = componentIds.length === 1 ? objectMeta.get(componentIds[0])?.name ?? componentIds[0] : null
 
   function update<K extends keyof ProductInfo>(key: K, value: ProductInfo[K]) {
     setDraft((d) => ({ ...d, [key]: value }))
@@ -387,7 +395,15 @@ function ProductInfoFields({ componentId }: { componentId: string }) {
 
   return (
     <div className="border-t px-3 py-2.5" style={{ borderColor: 'var(--panel-border)' }}>
-      <div className="mb-1.5 text-[11px] font-medium text-[var(--text)]">Product Information — &quot;{objectName}&quot;</div>
+      <div className="mb-1.5 text-[11px] font-medium text-[var(--text)]">
+        {isMulti ? `Product Information — ${componentIds.length} selected objects` : `Product Information — "${objectName}"`}
+      </div>
+      {isMulti && (
+        <p className="mb-1.5 text-[10px] leading-relaxed text-[var(--text-faint)]">
+          Applies the same values to all {componentIds.length} selected objects, replacing any product
+          information already on them individually.
+        </p>
+      )}
       <div className="space-y-2">
         <ProductInfoField label="Description">
           <textarea
@@ -450,11 +466,11 @@ function ProductInfoFields({ componentId }: { componentId: string }) {
         <button
           className="rounded bg-blue-600 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-blue-500"
           onClick={() => {
-            setProductInfo(componentId, draft)
+            setProductInfoForComponents(componentIds, draft)
             setJustSaved(true)
           }}
         >
-          Save Product Information
+          {isMulti ? `Apply to ${componentIds.length} Objects` : 'Save Product Information'}
         </button>
         {justSaved && <span className="text-[10px] text-emerald-400">Saved</span>}
       </div>
@@ -464,8 +480,9 @@ function ProductInfoFields({ componentId }: { componentId: string }) {
 
 function ProductInfoSection() {
   const selectedComponentIds = useAppStore((s) => s.selectedComponentIds)
-  if (selectedComponentIds.length !== 1) return null
-  return <ProductInfoFields key={selectedComponentIds[0]} componentId={selectedComponentIds[0]} />
+  if (selectedComponentIds.length === 0) return null
+  const key = [...selectedComponentIds].sort().join('|')
+  return <ProductInfoFields key={key} componentIds={selectedComponentIds} />
 }
 
 function FaceSelectionAssignment() {
