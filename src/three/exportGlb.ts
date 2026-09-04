@@ -2,7 +2,10 @@ import * as THREE from 'three'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import type { EdgeSettings, ExportSettings } from '../types/scene'
+import type { TreeFolder } from '../types/folder'
+import { getBuildStageFolders, resolveBuildStageAssignments } from '../types/folder'
 import { buildExportEdgesMesh } from './edges/tubeEdges'
+import { injectGlbRootExtras } from './glbBinary'
 
 const PREVIEW_LINE_NAME = '__edge_preview_line__'
 
@@ -63,10 +66,58 @@ function applyMaterialExportSettings(root: THREE.Object3D, exportSettings: Expor
   })
 }
 
+/** One row of the root-level `extras.buildStages` summary — see the module doc comment below. */
+interface BuildStageSummary {
+  id: string
+  name: string
+  order: number
+  objectNames: string[]
+}
+
+/**
+ * Stamps each staged object's clone with `buildStageId`/`buildStageName`/`buildStageOrder`
+ * (mirroring the productInfo <-> extras convention — see useAppStore.reapplyProductInfo) and
+ * returns a summary row per build-stage folder, so the caller can also embed a single top-level
+ * `extras.buildStages` array (built from folders/exports, this is grouping metadata only — it
+ * never touches geometry, materials, or the edges mesh, and objects outside any build-stage
+ * folder are left with no stage userData at all, unaffected).
+ */
+function stampBuildStages(clone: THREE.Object3D, folders: Record<string, TreeFolder>, folderMembership: Record<string, string>): BuildStageSummary[] {
+  const stageFolders = getBuildStageFolders(folders)
+  if (stageFolders.length === 0) return []
+
+  const assignments = resolveBuildStageAssignments(folders, folderMembership)
+  const objectNamesByStage = new Map<string, string[]>()
+
+  clone.traverse((obj) => {
+    const componentId = obj.userData.componentId as string | undefined
+    if (!componentId) return
+    const stage = assignments.get(componentId)
+    if (!stage) return
+    obj.userData.buildStageId = stage.id
+    obj.userData.buildStageName = stage.name
+    obj.userData.buildStageOrder = stage.buildStageOrder
+    const names = objectNamesByStage.get(stage.id) ?? []
+    names.push(obj.name || componentId)
+    objectNamesByStage.set(stage.id, names)
+  })
+
+  return stageFolders.map((f) => ({
+    id: f.id,
+    name: f.name,
+    order: f.buildStageOrder!,
+    objectNames: objectNamesByStage.get(f.id) ?? [],
+  }))
+}
+
 export interface ExportGlbOptions {
   modelGroup: THREE.Group
   exportSettings: ExportSettings
   edgeSettings: EdgeSettings
+  /** Build-stage grouping — see src/types/folder.ts. Optional/defaults to none, so callers that
+   * don't use folders/build stages get byte-identical export behavior to before this feature. */
+  folders?: Record<string, TreeFolder>
+  folderMembership?: Record<string, string>
 }
 
 /**
@@ -75,7 +126,7 @@ export interface ExportGlbOptions {
  * share geometry with the originals (cheap) but get their own material assignments so export
  * settings (materials/textures on-off) never affect what's rendered in the editor.
  */
-export async function exportGlb({ modelGroup, exportSettings, edgeSettings }: ExportGlbOptions): Promise<Blob> {
+export async function exportGlb({ modelGroup, exportSettings, edgeSettings, folders = {}, folderMembership = {} }: ExportGlbOptions): Promise<Blob> {
   const fbxRoot = modelGroup.children[0]
   if (!fbxRoot) throw new Error('No model loaded to export')
 
@@ -91,6 +142,7 @@ export async function exportGlb({ modelGroup, exportSettings, edgeSettings }: Ex
   const clone = cloneSkeleton(fbxRoot) as THREE.Object3D
   stripNonExportableChildren(clone)
   applyMaterialExportSettings(clone, exportSettings)
+  const buildStages = stampBuildStages(clone, folders, folderMembership)
   exportRoot.add(clone)
 
   // Export's own Component Edges toggle is independent of the live viewport's show/hide —
@@ -111,7 +163,12 @@ export async function exportGlb({ modelGroup, exportSettings, edgeSettings }: Ex
   if (!(result instanceof ArrayBuffer)) {
     throw new Error('Expected binary GLB output')
   }
-  return new Blob([result], { type: 'model/gltf-binary' })
+
+  // GLTFExporter has no option to set root-level extras itself — see glbBinary.ts — so the
+  // build-stages summary (when there is one) is spliced into the already-exported GLB's JSON
+  // chunk rather than threaded through the exporter's own API.
+  const finalBuffer = buildStages.length > 0 ? injectGlbRootExtras(result, { buildStages }) : result
+  return new Blob([finalBuffer], { type: 'model/gltf-binary' })
 }
 
 export function downloadBlob(blob: Blob, fileName: string) {
