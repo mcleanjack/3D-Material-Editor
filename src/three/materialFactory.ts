@@ -19,6 +19,10 @@ async function loadTexture(ref: TextureMapRef, colorSpace: THREE.ColorSpace): Pr
   texture.colorSpace = colorSpace
   texture.wrapS = THREE.RepeatWrapping
   texture.wrapT = THREE.RepeatWrapping
+  // Sharpens minified/oblique-angle sampling (a physical-size-driven UV repeat can easily mean
+  // 5-50+ tiles across a surface). three.js clamps this to the GPU's actual max anisotropy at
+  // render time, so requesting more than the hardware supports is safe.
+  texture.anisotropy = 16
   textureCache.set(cacheKey, texture)
   return texture
 }
