@@ -6,7 +6,7 @@ import { makeId } from '../utils/id'
 const urlCache = new Map<string, string>()
 const blobCache = new Map<string, Blob>()
 
-export async function storeTextureFile(file: File | Blob): Promise<string> {
+export async function storeAssetFile(file: File | Blob): Promise<string> {
   const assetId = makeId('asset')
   await dbPutAsset(assetId, file)
   blobCache.set(assetId, file)

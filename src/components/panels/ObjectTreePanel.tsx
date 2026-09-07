@@ -1,13 +1,26 @@
-import { useMemo, useState } from 'react'
+import { useRef, useMemo, useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import type { ObjectTreeNode } from '../../types/tree'
 import type { TreeFolder } from '../../types/folder'
 import { collectFolderComponentIds, getBuildStageFolders } from '../../types/folder'
-import { EMPTY_PRODUCT_INFO, looksLikeEmail, looksLikeUrl, type ProductInfo } from '../../types/product'
+import {
+  EMPTY_PRODUCT_INFO,
+  LINKED_DETAIL_WARN_BYTES,
+  looksLikeEmail,
+  looksLikeUrl,
+  type LinkedDetailRef,
+  type ProductInfo,
+} from '../../types/product'
+import { storeAssetFile, getAssetUrl } from '../../db/assetCache'
+import { formatBytes } from '../../utils/format'
 import { Icon } from '../common/Icon'
 import { PanelShell } from './PanelShell'
 import { MaterialPicker } from './MaterialPicker'
 import { PromptDialog } from '../common/PromptDialog'
+
+function isPdfFile(file: File): boolean {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+}
 
 /** Drag payload carried in the HTML5 DnD `application/json` slot. */
 type DragPayload = { kind: 'components'; ids: string[] } | { kind: 'folder'; id: string }
@@ -368,6 +381,94 @@ function ProductInfoField({ label, children }: { label: string; children: React.
   )
 }
 
+/** Upload-on-select, same as MaterialEditorPanel's TextureSlot: picking a file immediately stores
+ * it as a blob asset in IndexedDB and puts just the {assetId, fileName, fileSize, mimeType} ref
+ * into the draft — the componentId -> ProductInfo association (and so the PDF actually being
+ * "attached" to an object) only becomes real when Save is clicked, same as every other field
+ * here. */
+function LinkedDetailField({ value, onChange }: { value: LinkedDetailRef | null; onChange: (v: LinkedDetailRef | null) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleFile(file: File) {
+    setError(null)
+    if (!isPdfFile(file)) {
+      setError('Only PDF files are supported.')
+      return
+    }
+    setUploading(true)
+    try {
+      const assetId = await storeAssetFile(file)
+      onChange({ assetId, fileName: file.name, fileSize: file.size, mimeType: file.type || 'application/pdf' })
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function handleOpen() {
+    if (!value) return
+    const url = await getAssetUrl(value.assetId)
+    window.open(url, '_blank', 'noopener')
+  }
+
+  return (
+    <ProductInfoField label="Linked Detail">
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) void handleFile(file)
+          e.target.value = ''
+        }}
+      />
+      {value ? (
+        <div className="flex items-center gap-2 rounded border border-dashed border-[var(--panel-border)] p-2">
+          <Icon name="document" size={16} className="shrink-0 text-[var(--text-faint)]" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[11px] text-[var(--text)]" title={value.fileName}>
+              {value.fileName}
+            </div>
+            <div className="text-[10px] text-[var(--text-faint)]">{formatBytes(value.fileSize)}</div>
+          </div>
+          <div className="flex shrink-0 gap-1.5">
+            <button className="rounded bg-[#33353d] px-2 py-0.5 text-[10px] text-[var(--text)] hover:bg-[#3d3f48]" onClick={() => void handleOpen()}>
+              Open
+            </button>
+            <button
+              className="rounded bg-[#33353d] px-2 py-0.5 text-[10px] text-[var(--text)] hover:bg-[#3d3f48]"
+              onClick={() => inputRef.current?.click()}
+            >
+              Replace
+            </button>
+            <button className="rounded bg-[#33353d] px-2 py-0.5 text-[10px] text-red-400 hover:bg-[#3d3f48]" onClick={() => onChange(null)}>
+              Remove
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          className="flex items-center gap-1.5 rounded bg-[#2a2c33] px-2 py-1.5 text-[11px] text-[var(--text)] hover:bg-[#33353d] disabled:opacity-50"
+          disabled={uploading}
+          onClick={() => inputRef.current?.click()}
+        >
+          <Icon name="document" size={12} />
+          {uploading ? 'Uploading…' : 'Import Linked Detail'}
+        </button>
+      )}
+      {value && value.fileSize > LINKED_DETAIL_WARN_BYTES && (
+        <p className="mt-0.5 text-[10px] text-amber-400">
+          This PDF is {formatBytes(value.fileSize)} — large linked details increase the exported GLB's size noticeably.
+        </p>
+      )}
+      {error && <p className="mt-0.5 text-[10px] text-red-400">{error}</p>}
+    </ProductInfoField>
+  )
+}
+
 /** Keyed by the (sorted) selected componentId set from ProductInfoSection so switching the
  * selection — a different single object, or a different multi-select — remounts this with fresh
  * draft state, simpler and less error-prone than a useEffect re-sync. Edits are local (draft)
@@ -434,6 +535,7 @@ function ProductInfoFields({ componentIds }: { componentIds: string[] }) {
             <p className="mt-0.5 text-[10px] text-amber-400">Doesn&apos;t look like a full URL (missing http(s)://)</p>
           )}
         </ProductInfoField>
+        <LinkedDetailField value={draft.linkedDetail} onChange={(v) => update('linkedDetail', v)} />
 
         <div className="border-t pt-2" style={{ borderColor: 'var(--panel-border)' }}>
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-faint)]">
