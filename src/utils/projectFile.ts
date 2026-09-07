@@ -12,7 +12,12 @@
  *   ├── project.json           — the AuthoringProject record itself
  *   ├── materials.json         — CustomMaterial[] referenced by this project
  *   ├── assets-manifest.json   — { [assetId]: mimeType }, since a zip entry has no MIME of its own
- *   └── assets/<assetId>       — raw bytes for every texture/PDF referenced by the above
+ *   ├── assets/<assetId>       — raw bytes for every texture/PDF referenced by the above
+ *   └── model.fbx              — the source FBX itself, if one was loaded when this was saved
+ *                                (see sourceFbxAssetId on AuthoringProject) — without this, opening
+ *                                the file elsewhere would restore materials/settings but no model
+ *                                to apply them to, same as the in-browser project list already
+ *                                requires a manual re-import of the same-named FBX to resume.
  *
  * Importing never overwrites an existing local material or asset with the same id — ids are
  * random UUIDs (see utils/id.ts), so a collision only happens when re-opening a file that came
@@ -66,11 +71,18 @@ async function buildProjectZip(): Promise<{ bytes: Uint8Array<ArrayBuffer>; file
     assetManifest[assetId] = mimeType
   }
 
+  const modelEntry: Record<string, Uint8Array> = {}
+  if (project.sourceFbxAssetId) {
+    const fbxBlob = await getAssetBlob(project.sourceFbxAssetId)
+    modelEntry['model.fbx'] = new Uint8Array(await fbxBlob.arrayBuffer())
+  }
+
   const bytes = zipSync({
     'project.json': strToU8(JSON.stringify(project)),
     'materials.json': strToU8(JSON.stringify(materials)),
     'assets-manifest.json': strToU8(JSON.stringify(assetManifest)),
     ...assetEntries,
+    ...modelEntry,
   })
 
   return { bytes, fileName: `${project.name || 'project'}.zip` }
@@ -136,7 +148,8 @@ async function pickProjectFile(): Promise<File | null> {
 
 /** Imports a project .zip: unpacks it, adds any material/asset it references that this browser
  * doesn't already have (never overwriting an existing one), registers the project in the local
- * "Open Project" list too (so it's available for quick resume from then on), and loads it. */
+ * "Open Project" list too (so it's available for quick resume from then on), re-imports the
+ * bundled source FBX if one was included, and loads it. */
 async function importProjectZip(file: File): Promise<void> {
   const zip = unzipSync(new Uint8Array(await file.arrayBuffer()))
 
@@ -159,6 +172,17 @@ async function importProjectZip(file: File): Promise<void> {
   await dbPutProject(project)
   await useMaterialLibraryStore.getState().loadAll()
   await useProjectStore.getState().loadAll()
+
+  // loadProject() only reapplies material/product-info assignments once a live model with a
+  // matching fbxFileName already exists (see useProjectStore.loadProject) — normally the user
+  // has to re-import the source FBX by hand first. When this file bundled the FBX itself, do
+  // that reimport automatically so opening it is genuinely one step.
+  const fbxBytes = zip['model.fbx']
+  if (fbxBytes) {
+    const fbxFile = new File([fbxBytes], project.sourceFbxName || 'model.fbx', { type: 'application/octet-stream' })
+    await useAppStore.getState().importFbxFile(fbxFile)
+  }
+
   useProjectStore.getState().loadProject(project.id)
 }
 

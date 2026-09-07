@@ -31,6 +31,7 @@ export function buildProjectSnapshot(id: string, name: string): AuthoringProject
     createdAt: now,
     updatedAt: now,
     sourceFbxName: app.fbxFileName ?? '',
+    sourceFbxAssetId: app.fbxAssetId ?? undefined,
     materialAssignments: app.materialAssignments,
     productInfo: app.productInfo,
     faceMaterialAssignments: app.faceMaterialAssignments,
