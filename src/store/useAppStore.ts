@@ -10,6 +10,7 @@ import { DEFAULT_SUN_SETTINGS } from '../types/sun'
 import type { ProductInfo } from '../types/product'
 import { isProductInfoEmpty } from '../types/product'
 import { importFbx } from '../three/fbxImport'
+import { storeAssetFile } from '../db/assetCache'
 import { SceneManager, type ProjectionMode } from '../three/SceneManager'
 import { EdgePreviewController } from '../three/edges/fatLineEdges'
 import { buildThreeMaterial } from '../three/materialFactory'
@@ -34,6 +35,10 @@ interface AppState {
   objectMeta: Map<string, ObjectMeta>
   fbxMaterialNames: string[]
   fbxFileName: string | null
+  /** The imported FBX's own bytes, cached as a blob asset (see db/assetCache.ts) so a
+   * self-contained "Save to File" project export can bundle the source model itself, not just a
+   * reference to its name — see src/utils/projectFile.ts. Null until an FBX has been imported. */
+  fbxAssetId: string | null
   importing: boolean
   importError: string | null
 
@@ -189,6 +194,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   objectMeta: new Map(),
   fbxMaterialNames: [],
   fbxFileName: null,
+  fbxAssetId: null,
   importing: false,
   importError: null,
 
@@ -235,6 +241,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const result = await importFbx(file)
       const sm = get().sceneManager
       sm?.setModel(result.root)
+      const fbxAssetId = await storeAssetFile(file)
 
       isolateSet = null
       set({
@@ -243,6 +250,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         objectMeta: result.objectMeta,
         fbxMaterialNames: result.fbxMaterialNames,
         fbxFileName: file.name,
+        fbxAssetId,
         importing: false,
         materialAssignments: {},
         productInfo: {},
