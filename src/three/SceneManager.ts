@@ -341,8 +341,8 @@ export class SceneManager {
     const raycaster = new THREE.Raycaster()
     raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera)
     const hits = raycaster.intersectObject(this.modelGroup, true)
-    if (hits.length === 0) return null
-    return hits[0].object
+    const hit = hits.find((h) => SceneManager.isEffectivelyVisible(h.object))
+    return hit ? hit.object : null
   }
 
   /** Face Select mode: raycast for the individual triangle under the cursor, translated to a
@@ -353,7 +353,9 @@ export class SceneManager {
     const raycaster = new THREE.Raycaster()
     raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera)
     const hits = raycaster.intersectObject(this.modelGroup, true)
-    const hit = hits.find((h) => (h.object as THREE.Mesh).isMesh && !isAuxiliaryMesh(h.object) && h.faceIndex != null)
+    const hit = hits.find(
+      (h) => (h.object as THREE.Mesh).isMesh && !isAuxiliaryMesh(h.object) && h.faceIndex != null && SceneManager.isEffectivelyVisible(h.object),
+    )
     if (!hit) return null
     const mesh = hit.object as THREE.Mesh
     const componentId = SceneManager.findComponentId(mesh)
@@ -476,6 +478,20 @@ export class SceneManager {
     highlight.matrix.copy(mesh.matrixWorld)
     highlight.matrixWorldNeedsUpdate = true
     this.faceHighlightGroup.add(highlight)
+  }
+
+  /** THREE.Raycaster ignores `.visible` entirely (it only checks `.layers`), so a hidden
+   * component's mesh is still fully hit-testable by default — clicking where it used to be
+   * would still pick it instead of whatever's actually visible there. `applyVisibility` only
+   * ever sets `.visible` on the componentId node itself, not unconditionally down the whole
+   * subtree, so this walks the full ancestor chain rather than checking just the hit object. */
+  static isEffectivelyVisible(obj: THREE.Object3D): boolean {
+    let cur: THREE.Object3D | null = obj
+    while (cur) {
+      if (!cur.visible) return false
+      cur = cur.parent
+    }
+    return true
   }
 
   /** Walks up from a raycast hit to find the node carrying a componentId (should be immediate,
