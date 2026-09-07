@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js'
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js'
 import { EDGES_EXPORT_NAME } from '../types/scene'
 
 export interface GlbValidationReport {
@@ -22,11 +24,21 @@ export interface GlbValidationReport {
 
 /** Loads a just-exported GLB back through GLTFLoader (the same loader path a downstream
  * Three.js viewer would use) and reports what actually round-tripped, so "export succeeded"
- * claims are backed by re-parsing the file rather than assumed from the export call alone. */
-export async function validateGlb(blob: Blob): Promise<GlbValidationReport> {
+ * claims are backed by re-parsing the file rather than assumed from the export call alone.
+ *
+ * `renderer` is only needed to validate an *optimized* export: KTX2Loader.detectSupport() needs a
+ * live WebGLRenderer to pick a transcode target, so it's wired up only when one is passed in. A
+ * plain (non-optimized) export never contains KTX2 textures and validates fine without it. */
+export async function validateGlb(blob: Blob, renderer?: THREE.WebGLRenderer): Promise<GlbValidationReport> {
   const url = URL.createObjectURL(blob)
+  let ktx2Loader: KTX2Loader | undefined
   try {
     const loader = new GLTFLoader()
+    loader.setMeshoptDecoder(MeshoptDecoder)
+    if (renderer) {
+      ktx2Loader = new KTX2Loader().setTranscoderPath(`${import.meta.env.BASE_URL}basis/`).detectSupport(renderer)
+      loader.setKTX2Loader(ktx2Loader)
+    }
     const gltf = await loader.loadAsync(url)
     const scene = gltf.scene
 
@@ -77,6 +89,7 @@ export async function validateGlb(blob: Blob): Promise<GlbValidationReport> {
       scene,
     }
   } finally {
+    ktx2Loader?.dispose()
     URL.revokeObjectURL(url)
   }
 }

@@ -4,7 +4,34 @@ import { Icon } from './Icon'
 import { Button } from './Button'
 import { RoundTripPreview } from './RoundTripPreview'
 
-export function ExportReportModal({ report, fileName, onClose }: { report: GlbValidationReport; fileName: string; onClose: () => void }) {
+export interface OptimizeSizeInfo {
+  originalBytes: number
+  optimizedBytes: number
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB']
+  let value = bytes / 1024
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex++
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`
+}
+
+export function ExportReportModal({
+  report,
+  fileName,
+  sizeInfo,
+  onClose,
+}: {
+  report: GlbValidationReport
+  fileName: string
+  sizeInfo?: OptimizeSizeInfo
+  onClose: () => void
+}) {
   const [showPreview, setShowPreview] = useState(false)
 
   return (
@@ -24,6 +51,16 @@ export function ExportReportModal({ report, fileName, onClose }: { report: GlbVa
 
         <div className="flex gap-4">
           <dl className="mb-4 flex-1 space-y-1.5 text-xs">
+            {sizeInfo && (
+              <>
+                <Row label="Original size" value={formatBytes(sizeInfo.originalBytes)} />
+                <Row label="Optimized size" value={formatBytes(sizeInfo.optimizedBytes)} />
+                <Row
+                  label="Size reduction"
+                  value={`${(100 * (1 - sizeInfo.optimizedBytes / sizeInfo.originalBytes)).toFixed(0)}%`}
+                />
+              </>
+            )}
             <Row label="Mesh objects" value={report.meshCount} />
             <Row label="Materials embedded" value={report.materialCount} />
             <Row label="Materials with textures" value={report.materialsWithTextures} />
