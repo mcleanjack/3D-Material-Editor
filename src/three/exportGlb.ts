@@ -4,6 +4,8 @@ import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.j
 import type { EdgeSettings, ExportSettings } from '../types/scene'
 import type { TreeFolder } from '../types/folder'
 import { getBuildStageFolders, resolveBuildStageAssignments } from '../types/folder'
+import type { ProductInfo } from '../types/product'
+import { getAssetBlob } from '../db/assetCache'
 import { buildExportEdgesMesh } from './edges/tubeEdges'
 import { injectGlbRootExtras } from './glbBinary'
 
@@ -110,6 +112,54 @@ function stampBuildStages(clone: THREE.Object3D, folders: Record<string, TreeFol
   }))
 }
 
+/** Base64-encodes a Blob's bytes in fixed-size chunks — `String.fromCharCode(...bytes)` on a
+ * multi-megabyte Uint8Array can blow the engine's max-argument-count limit, so this builds the
+ * intermediate string incrementally instead of in one spread call. */
+async function blobToBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+  }
+  return btoa(binary)
+}
+
+/**
+ * Embeds each selected object's linked PDF detail (see src/types/product.ts) as base64 data
+ * directly on that object's `userData.productInfo.linkedDetail`, so GLTFExporter's existing
+ * userData -> extras serialization carries the PDF bytes into the GLB automatically — the same
+ * mechanism that already carries the rest of productInfo, no exporter API changes needed.
+ *
+ * Only ever touches the export clone — THREE.Object3D.copy() deep-clones userData via a
+ * JSON round-trip, so `clone.userData.productInfo` is already independent of the live store's
+ * `productInfo[componentId]` object by the time this runs.
+ *
+ * A linked detail whose blob asset has gone missing (never expected, but not a reason to fail an
+ * otherwise-good export) is left as metadata-only: its filename/size still export, just without
+ * `dataBase64`.
+ */
+async function embedLinkedDetails(root: THREE.Object3D): Promise<void> {
+  const targets: THREE.Object3D[] = []
+  root.traverse((obj) => {
+    if ((obj.userData.productInfo as ProductInfo | undefined)?.linkedDetail) targets.push(obj)
+  })
+
+  await Promise.all(
+    targets.map(async (obj) => {
+      const info = obj.userData.productInfo as ProductInfo
+      const linkedDetail = info.linkedDetail!
+      try {
+        const blob = await getAssetBlob(linkedDetail.assetId)
+        const dataBase64 = await blobToBase64(blob)
+        obj.userData.productInfo = { ...info, linkedDetail: { ...linkedDetail, dataBase64 } }
+      } catch {
+        // Missing asset — leave the metadata-only reference already in place untouched.
+      }
+    }),
+  )
+}
+
 export interface ExportGlbOptions {
   modelGroup: THREE.Group
   exportSettings: ExportSettings
@@ -143,6 +193,7 @@ export async function exportGlb({ modelGroup, exportSettings, edgeSettings, fold
   stripNonExportableChildren(clone)
   applyMaterialExportSettings(clone, exportSettings)
   const buildStages = stampBuildStages(clone, folders, folderMembership)
+  await embedLinkedDetails(clone)
   exportRoot.add(clone)
 
   // Export's own Component Edges toggle is independent of the live viewport's show/hide —
