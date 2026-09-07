@@ -5,6 +5,7 @@ import { exportGlb, downloadBlob } from '../../three/exportGlb'
 import { optimizeGlb, type OptimizeStage } from '../../three/glbOptimize'
 import { validateGlb, type GlbValidationReport } from '../../three/reimportValidate'
 import { downloadProductInfoCsv } from '../../utils/exportProductInfo'
+import { exportProjectToFile, importProjectFromFile } from '../../utils/projectFile'
 import { Icon } from '../common/Icon'
 import { Button } from '../common/Button'
 import { ExportReportModal, type OptimizeSizeInfo } from '../common/ExportReportModal'
@@ -57,6 +58,21 @@ export function TopBar() {
     const baseName = (fbxFileName ?? 'model').replace(/\.fbx$/i, '')
     downloadProductInfoCsv(productInfo, objectMeta, `${baseName}-product-info.csv`)
     setStatusMessage(`Exported product information for ${Object.keys(productInfo).length} object(s).`)
+  }
+
+  async function handleSaveToFile() {
+    setStatusMessage('Saving project to file…')
+    try {
+      await exportProjectToFile()
+      setStatusMessage('Project saved to file.')
+    } catch (err) {
+      setStatusMessage(`Failed to save project file: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  async function handleOpenFromFile() {
+    setStatusMessage('Opening project file…')
+    await importProjectFromFile()
   }
 
   async function handleExport() {
@@ -156,6 +172,22 @@ export function TopBar() {
                 label="Open Project…"
                 onClick={() => {
                   setShowOpenProject(true)
+                  setMenuOpen(false)
+                }}
+              />
+              <MenuItem
+                icon="save"
+                label="Save to File…"
+                onClick={() => {
+                  void handleSaveToFile()
+                  setMenuOpen(false)
+                }}
+              />
+              <MenuItem
+                icon="folder"
+                label="Open from File…"
+                onClick={() => {
+                  void handleOpenFromFile()
                   setMenuOpen(false)
                 }}
               />
