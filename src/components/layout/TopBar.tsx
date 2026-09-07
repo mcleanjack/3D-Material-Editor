@@ -8,6 +8,7 @@ import { downloadProductInfoCsv } from '../../utils/exportProductInfo'
 import { Icon } from '../common/Icon'
 import { Button } from '../common/Button'
 import { ExportReportModal, type OptimizeSizeInfo } from '../common/ExportReportModal'
+import { OpenProjectModal } from '../common/OpenProjectModal'
 
 const OPTIMIZE_STAGE_LABELS: Record<OptimizeStage, string> = {
   reading: 'READING…',
@@ -26,6 +27,7 @@ export function TopBar() {
   const [optimizeExport, setOptimizeExport] = useState(false)
   const [optimizeStage, setOptimizeStage] = useState<OptimizeStage | null>(null)
   const [report, setReport] = useState<{ report: GlbValidationReport; fileName: string; sizeInfo?: OptimizeSizeInfo } | null>(null)
+  const [showOpenProject, setShowOpenProject] = useState(false)
 
   const importFbxFile = useAppStore((s) => s.importFbxFile)
   const importing = useAppStore((s) => s.importing)
@@ -114,22 +116,49 @@ export function TopBar() {
           <>
             <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
             <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] py-1 shadow-xl">
-              <MenuItem icon="import" label="Import FBX…" onClick={() => fbxInputRef.current?.click()} />
+              <MenuItem
+                icon="import"
+                label="Import FBX…"
+                onClick={() => {
+                  fbxInputRef.current?.click()
+                  setMenuOpen(false)
+                }}
+              />
               <MenuItem
                 icon="export"
                 label="Export GLB…"
                 disabled={!modelRoot}
-                onClick={() => void handleExport()}
+                onClick={() => {
+                  void handleExport()
+                  setMenuOpen(false)
+                }}
               />
               <MenuItem
                 icon="export"
                 label="Export Product Information (CSV)…"
                 disabled={Object.keys(productInfo).length === 0}
-                onClick={handleExportProductInfo}
+                onClick={() => {
+                  handleExportProductInfo()
+                  setMenuOpen(false)
+                }}
               />
               <div className="my-1 h-px bg-[var(--panel-border)]" />
-              <MenuItem icon="save" label="Save Project" onClick={() => void saveCurrentAsProject()} />
-              <MenuItem icon="folder" label="Open Project…" onClick={() => useAppStore.getState().setActiveRightPanel('objectTree')} />
+              <MenuItem
+                icon="save"
+                label="Save Project"
+                onClick={() => {
+                  void saveCurrentAsProject()
+                  setMenuOpen(false)
+                }}
+              />
+              <MenuItem
+                icon="folder"
+                label="Open Project…"
+                onClick={() => {
+                  setShowOpenProject(true)
+                  setMenuOpen(false)
+                }}
+              />
             </div>
           </>
         )}
@@ -192,6 +221,7 @@ export function TopBar() {
           onClose={() => setReport(null)}
         />
       )}
+      {showOpenProject && <OpenProjectModal onClose={() => setShowOpenProject(false)} />}
     </div>
   )
 }
