@@ -53,6 +53,21 @@ export async function validateGlb(blob: Blob, renderer?: THREE.WebGLRenderer): P
     scene.traverse((obj) => {
       objectNames.push(obj.name || '(unnamed)')
 
+      // __COMPONENT_EDGES__ is itself a Group of per-component meshes (see tubeEdges.ts) — matches
+      // the same "Group of only meshes" shape the multi-material-split heuristic below looks for,
+      // so it's excluded from that count and handled on its own terms here instead. (Reloaded via
+      // GLTFLoader, this node's `.type` comes back as plain "Object3D", not "Group" — the name is
+      // the only reliable signal.)
+      if (obj.name === EDGES_EXPORT_NAME) {
+        hasEdgesObject = true
+        obj.children.forEach((child) => {
+          const edgeMesh = child as THREE.Mesh
+          if (!edgeMesh.isMesh) return
+          edgesTriangleCount += (edgeMesh.geometry.index?.count ?? edgeMesh.geometry.attributes.position.count) / 3
+        })
+        return
+      }
+
       if (obj.type === 'Group' && obj.children.length > 1 && obj.children.every((c) => (c as THREE.Mesh).isMesh)) {
         multiMaterialObjectCount++
         totalPrimitivesFromSplitObjects += obj.children.length
@@ -61,10 +76,6 @@ export async function validateGlb(blob: Blob, renderer?: THREE.WebGLRenderer): P
       const mesh = obj as THREE.Mesh
       if (!mesh.isMesh) return
       meshCount++
-      if (obj.name === EDGES_EXPORT_NAME) {
-        hasEdgesObject = true
-        edgesTriangleCount = (mesh.geometry.index?.count ?? mesh.geometry.attributes.position.count) / 3
-      }
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
       mats.forEach((m) => materials.add(m))
     })
