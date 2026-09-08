@@ -84,11 +84,14 @@ interface BuildStageSummary {
  * never touches geometry, materials, or the edges mesh, and objects outside any build-stage
  * folder are left with no stage userData at all, unaffected).
  */
-function stampBuildStages(clone: THREE.Object3D, folders: Record<string, TreeFolder>, folderMembership: Record<string, string>): BuildStageSummary[] {
+function stampBuildStages(
+  clone: THREE.Object3D,
+  folders: Record<string, TreeFolder>,
+  assignments: Map<string, TreeFolder>,
+): BuildStageSummary[] {
   const stageFolders = getBuildStageFolders(folders)
   if (stageFolders.length === 0) return []
 
-  const assignments = resolveBuildStageAssignments(folders, folderMembership)
   const objectNamesByStage = new Map<string, string[]>()
 
   clone.traverse((obj) => {
@@ -110,6 +113,27 @@ function stampBuildStages(clone: THREE.Object3D, folders: Record<string, TreeFol
     order: f.buildStageOrder!,
     objectNames: objectNamesByStage.get(f.id) ?? [],
   }))
+}
+
+/**
+ * Stamps matching `buildStageId`/`buildStageName`/`buildStageOrder` onto each per-component
+ * `__COMPONENT_EDGES__` mesh (see tubeEdges.ts), resolved via its `sourceComponentId` rather than
+ * its own `componentId` (which is a derived, edges-only id — see buildExportEdgesMesh) — so a
+ * component's edge outline turns on/off together with the component itself, stage for stage.
+ * Deliberately excluded from the `extras.buildStages` summary's `objectNames`: that list is meant
+ * to describe the actual authored objects in a stage, not the synthetic edge helpers derived
+ * from them.
+ */
+function stampEdgeMeshBuildStages(edgesGroup: THREE.Object3D, assignments: Map<string, TreeFolder>) {
+  edgesGroup.traverse((obj) => {
+    const sourceComponentId = obj.userData.sourceComponentId as string | undefined
+    if (!sourceComponentId) return
+    const stage = assignments.get(sourceComponentId)
+    if (!stage) return
+    obj.userData.buildStageId = stage.id
+    obj.userData.buildStageName = stage.name
+    obj.userData.buildStageOrder = stage.buildStageOrder
+  })
 }
 
 /** Base64-encodes a Blob's bytes in fixed-size chunks — `String.fromCharCode(...bytes)` on a
@@ -171,10 +195,11 @@ export interface ExportGlbOptions {
 }
 
 /**
- * Exports the current model + (optionally) a dedicated __COMPONENT_EDGES__ mesh to a binary GLB.
- * Works on a cloned scene graph so none of this mutates the live authoring scene: node clones
- * share geometry with the originals (cheap) but get their own material assignments so export
- * settings (materials/textures on-off) never affect what's rendered in the editor.
+ * Exports the current model + (optionally) a dedicated __COMPONENT_EDGES__ group (one mesh per
+ * component, see tubeEdges.ts) to a binary GLB. Works on a cloned scene graph so none of this
+ * mutates the live authoring scene: node clones share geometry with the originals (cheap) but get
+ * their own material assignments so export settings (materials/textures on-off) never affect what
+ * renders in the editor.
  */
 export async function exportGlb({ modelGroup, exportSettings, edgeSettings, folders = {}, folderMembership = {} }: ExportGlbOptions): Promise<Blob> {
   const fbxRoot = modelGroup.children[0]
@@ -192,15 +217,19 @@ export async function exportGlb({ modelGroup, exportSettings, edgeSettings, fold
   const clone = cloneSkeleton(fbxRoot) as THREE.Object3D
   stripNonExportableChildren(clone)
   applyMaterialExportSettings(clone, exportSettings)
-  const buildStages = stampBuildStages(clone, folders, folderMembership)
+  const stageAssignments = resolveBuildStageAssignments(folders, folderMembership)
+  const buildStages = stampBuildStages(clone, folders, stageAssignments)
   await embedLinkedDetails(clone)
   exportRoot.add(clone)
 
   // Export's own Component Edges toggle is independent of the live viewport's show/hide —
   // per spec, an author may want edges visible in the editor but excluded from the shipped GLB.
   if (exportSettings.includeEdges) {
-    const edgesMesh = buildExportEdgesMesh(modelGroup, edgeSettings)
-    if (edgesMesh) exportRoot.add(edgesMesh)
+    const edgesGroup = buildExportEdgesMesh(modelGroup, edgeSettings)
+    if (edgesGroup) {
+      stampEdgeMeshBuildStages(edgesGroup, stageAssignments)
+      exportRoot.add(edgesGroup)
+    }
   }
 
   const exporter = new GLTFExporter()

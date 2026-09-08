@@ -46,41 +46,23 @@ function appendSegmentRibbon(positions: number[], indices: number[], p1: THREE.V
 }
 
 /**
- * Builds a single merged, exportable mesh (`__COMPONENT_EDGES__`) representing every visible
- * component's edges as real 3D geometry (thin flat ribbons), in world space, fully decoupled
- * from the source model geometry — per the spec, this must not modify or merge into the original
- * model, and must survive a glTF round-trip (unlike the LineMaterial/LineSegments2 "fat lines"
- * used for the live viewport, whose shader does not export to glTF). All segments accumulate
- * into one shared position/index buffer up front, so this is already a single draw call/geometry
- * — there's no per-segment geometry object to merge afterward.
+ * Builds an exportable `__COMPONENT_EDGES__` group holding one mesh per visible component's
+ * edges, as real 3D geometry (thin flat ribbons) in world space, fully decoupled from the source
+ * model geometry — per the spec, this must not modify or merge into the original model, and must
+ * survive a glTF round-trip (unlike the LineMaterial/LineSegments2 "fat lines" used for the live
+ * viewport, whose shader does not export to glTF).
+ *
+ * One mesh per component (not one merged mesh for the whole model) so each edge mesh can carry
+ * its own `sourceComponentId` in userData — the same userData -> extras path already used for
+ * componentId/productInfo elsewhere in this app — letting a downstream viewer show/hide a
+ * component's edges together with the component itself (or by build stage, once exportGlb.ts
+ * stamps matching buildStage fields onto these meshes too). All meshes share one material
+ * instance, so this is still one shared material in the exported GLB either way.
  */
-export function buildExportEdgesMesh(modelGroup: THREE.Group, settings: EdgeSettings): THREE.Mesh | null {
+export function buildExportEdgesMesh(modelGroup: THREE.Group, settings: EdgeSettings): THREE.Group | null {
   const halfWidth = Math.max(settings.lineWeight, 0.1) * RIBBON_HALF_WIDTH_PER_WEIGHT
-  const positions: number[] = []
-  const indices: number[] = []
 
   modelGroup.updateWorldMatrix(true, true)
-
-  modelGroup.traverse((obj) => {
-    const mesh = obj as THREE.Mesh
-    if (!mesh.isMesh || !mesh.geometry || !mesh.visible || isAuxiliaryMesh(mesh)) return
-
-    const edgesGeom = getEdgesGeometry(mesh.geometry, settings.angleThreshold)
-    const arr = edgesGeom.attributes.position.array as Float32Array
-
-    for (let i = 0; i < arr.length; i += 6) {
-      _p1.set(arr[i], arr[i + 1], arr[i + 2]).applyMatrix4(mesh.matrixWorld)
-      _p2.set(arr[i + 3], arr[i + 4], arr[i + 5]).applyMatrix4(mesh.matrixWorld)
-      appendSegmentRibbon(positions, indices, _p1, _p2, halfWidth)
-    }
-  })
-
-  if (positions.length === 0) return null
-
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  geometry.setIndex(indices)
-  geometry.computeVertexNormals()
 
   const material = new THREE.MeshBasicMaterial({
     color: new THREE.Color(settings.color),
@@ -90,7 +72,40 @@ export function buildExportEdgesMesh(modelGroup: THREE.Group, settings: EdgeSett
     side: THREE.DoubleSide,
   })
 
-  const mesh = new THREE.Mesh(geometry, material)
-  mesh.name = EDGES_EXPORT_NAME
-  return mesh
+  const group = new THREE.Group()
+  group.name = EDGES_EXPORT_NAME
+
+  modelGroup.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh || !mesh.geometry || !mesh.visible || isAuxiliaryMesh(mesh)) return
+
+    const sourceComponentId = mesh.userData.componentId as string | undefined
+    const edgesGeom = getEdgesGeometry(mesh.geometry, settings.angleThreshold)
+    const arr = edgesGeom.attributes.position.array as Float32Array
+    if (arr.length === 0) return
+
+    const positions: number[] = []
+    const indices: number[] = []
+    for (let i = 0; i < arr.length; i += 6) {
+      _p1.set(arr[i], arr[i + 1], arr[i + 2]).applyMatrix4(mesh.matrixWorld)
+      _p2.set(arr[i + 3], arr[i + 4], arr[i + 5]).applyMatrix4(mesh.matrixWorld)
+      appendSegmentRibbon(positions, indices, _p1, _p2, halfWidth)
+    }
+    if (positions.length === 0) return
+
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geometry.setIndex(indices)
+    geometry.computeVertexNormals()
+
+    const edgeMesh = new THREE.Mesh(geometry, material)
+    edgeMesh.name = `${mesh.name || 'component'}__edges__`
+    if (sourceComponentId) {
+      edgeMesh.userData.componentId = `${sourceComponentId}::edges`
+      edgeMesh.userData.sourceComponentId = sourceComponentId
+    }
+    group.add(edgeMesh)
+  })
+
+  return group.children.length > 0 ? group : null
 }
