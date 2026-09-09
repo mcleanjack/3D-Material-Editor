@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import * as THREE from 'three'
 import type { ObjectMeta, EdgeSettings, ExportSettings } from '../types/scene'
 import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings } from '../types/scene'
-import { renameNodeInTree, type ObjectTreeNode } from '../types/tree'
+import { renameNodeInTree, renameNodesInTree, type ObjectTreeNode } from '../types/tree'
 import type { TreeFolder } from '../types/folder'
 import { collectFolderComponentIds, getBuildStageFolders } from '../types/folder'
 import type { SunSettings } from '../types/sun'
@@ -103,6 +103,12 @@ interface AppState {
   selectComponentRange: (componentIds: string[]) => void
   setHover: (componentId: string | null) => void
   renameComponent: (componentId: string, name: string) => void
+  /** Bulk version of renameComponent — restores every componentId -> name entry a saved project
+   * recorded (see AuthoringProject.componentNames), needed because re-importing the source FBX
+   * on project open regenerates objectMeta/objectTree straight from the FBX's own object names,
+   * which would otherwise silently revert any rename. componentIds absent from `names` are left
+   * untouched. */
+  applyComponentNames: (names: Record<string, string>) => void
 
   toggleVisibility: (componentId: string) => void
   isolateSelected: () => void
@@ -338,6 +344,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { modelRoot } = get()
     modelRoot?.traverse((obj) => {
       if (obj.userData.componentId === componentId) obj.name = trimmed
+    })
+  },
+
+  applyComponentNames: (names) => {
+    if (Object.keys(names).length === 0) return
+    set((s) => {
+      const objectMeta = new Map(s.objectMeta)
+      for (const [componentId, name] of Object.entries(names)) {
+        const meta = objectMeta.get(componentId)
+        if (meta && meta.name !== name) objectMeta.set(componentId, { ...meta, name })
+      }
+      return {
+        objectMeta,
+        objectTree: s.objectTree ? renameNodesInTree(s.objectTree, names) : s.objectTree,
+      }
+    })
+    const { modelRoot } = get()
+    modelRoot?.traverse((obj) => {
+      const componentId = obj.userData.componentId as string | undefined
+      const name = componentId ? names[componentId] : undefined
+      if (name !== undefined) obj.name = name
     })
   },
 
