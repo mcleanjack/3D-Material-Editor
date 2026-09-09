@@ -84,6 +84,7 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
   const folderMembership = useAppStore((s) => s.folderMembership)
   const hasProductInfo = useAppStore((s) => !!s.productInfo[node.componentId])
   const selectComponent = useAppStore((s) => s.selectComponent)
+  const selectAllInstancesOf = useAppStore((s) => s.selectAllInstancesOf)
   const setHover = useAppStore((s) => s.setHover)
   const toggleVisibility = useAppStore((s) => s.toggleVisibility)
 
@@ -118,7 +119,11 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
         style={{ paddingLeft: depth * 14 + 4 }}
         onMouseEnter={() => setHover(node.componentId)}
         onMouseLeave={() => setHover(null)}
-        onClick={(e) => selectComponent(node.componentId, e.shiftKey || e.metaKey || e.ctrlKey)}
+        title="Click to select. Shift-click to select every object with this same name."
+        onClick={(e) => {
+          if (e.shiftKey) selectAllInstancesOf(node.componentId)
+          else selectComponent(node.componentId, e.metaKey || e.ctrlKey)
+        }}
       >
         <button
           className="flex h-4 w-4 shrink-0 items-center justify-center"
@@ -316,6 +321,7 @@ function SelectionAssignment() {
   const materialAssignments = useAppStore((s) => s.materialAssignments)
   const assignMaterialToComponents = useAppStore((s) => s.assignMaterialToComponents)
   const createFolderFromSelection = useAppStore((s) => s.createFolderFromSelection)
+  const mergeSelectedComponents = useAppStore((s) => s.mergeSelectedComponents)
   const [pending, setPending] = useState<string | null | undefined>(undefined)
   const [creatingFolder, setCreatingFolder] = useState(false)
 
@@ -331,6 +337,8 @@ function SelectionAssignment() {
         <div className="text-[11px] font-medium text-[var(--text)]">
           {selectedComponentIds.length} selected object{selectedComponentIds.length > 1 ? 's' : ''}
         </div>
+      </div>
+      <div className="mb-1.5 flex flex-wrap gap-1.5">
         <button
           className="shrink-0 rounded bg-[#2a2c33] px-1.5 py-1 text-[11px] text-[var(--text)] hover:bg-[#33353d]"
           onClick={() => setCreatingFolder(true)}
@@ -338,6 +346,17 @@ function SelectionAssignment() {
           <span className="inline-flex items-center gap-1">
             <Icon name="folder" size={11} />
             New Folder from Selection
+          </span>
+        </button>
+        <button
+          title={selectedComponentIds.length < 2 ? 'Select 2 or more objects to merge' : undefined}
+          disabled={selectedComponentIds.length < 2}
+          className="shrink-0 rounded bg-[#2a2c33] px-1.5 py-1 text-[11px] text-[var(--text)] hover:bg-[#33353d] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[#2a2c33]"
+          onClick={() => mergeSelectedComponents()}
+        >
+          <span className="inline-flex items-center gap-1">
+            <Icon name="copy" size={11} />
+            Merge into One Object
           </span>
         </button>
       </div>
