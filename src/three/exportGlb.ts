@@ -68,6 +68,136 @@ function applyMaterialExportSettings(root: THREE.Object3D, exportSettings: Expor
   })
 }
 
+const TEXTURE_SLOT_KEYS = ['map', 'normalMap', 'bumpMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap'] as const
+
+/** materialFactory.ts's applyUvTransform sets the same repeat/offset/rotation/center on every
+ * texture slot of a given material, so reading it off whichever slot is present first is enough
+ * — there's nothing to reconcile between slots. Returns null for the (overwhelmingly common)
+ * identity case, so callers can skip baking entirely for materials that don't need it. */
+function getMaterialUvTransform(material: THREE.Material): THREE.Matrix3 | null {
+  const std = material as THREE.MeshStandardMaterial
+  const tex = TEXTURE_SLOT_KEYS.map((key) => std[key]).find((t): t is THREE.Texture => !!t)
+  if (!tex) return null
+  if (tex.repeat.x === 1 && tex.repeat.y === 1 && tex.offset.x === 0 && tex.offset.y === 0 && tex.rotation === 0) return null
+  const matrix = new THREE.Matrix3()
+  matrix.setUvTransform(tex.offset.x, tex.offset.y, tex.repeat.x, tex.repeat.y, tex.rotation, tex.center.x, tex.center.y)
+  return matrix
+}
+
+/** Clones `material` with every texture slot also cloned (Material.clone() only shallow-copies
+ * texture *references* — it would leave the clone pointing at the exact same Texture objects as
+ * the live scene's material) and each cloned texture's transform reset to identity. The clone is
+ * what gets assigned onto export-clone meshes in place of the original, so resetting the
+ * transform here never touches the live scene's material or texture. */
+function cloneMaterialWithResetUv(material: THREE.Material): THREE.Material {
+  const clone = material.clone()
+  const std = clone as THREE.MeshStandardMaterial
+  for (const key of TEXTURE_SLOT_KEYS) {
+    const tex = std[key]
+    if (!tex) continue
+    const texClone = tex.clone()
+    texClone.offset.set(0, 0)
+    texClone.repeat.set(1, 1)
+    texClone.rotation = 0
+    texClone.center.set(0, 0)
+    texClone.needsUpdate = true
+    std[key] = texClone
+  }
+  return clone
+}
+
+const _uv = new THREE.Vector2()
+
+function applyMatrixToUvIndices(uv: THREE.BufferAttribute, matrix: THREE.Matrix3, vertexIndices: Iterable<number>) {
+  for (const i of vertexIndices) {
+    _uv.fromBufferAttribute(uv, i).applyMatrix3(matrix)
+    uv.setXY(i, _uv.x, _uv.y)
+  }
+}
+
+function* vertexIndicesInRange(geometry: THREE.BufferGeometry, start: number, count: number): Generator<number> {
+  if (geometry.index) {
+    for (let i = start; i < start + count; i++) yield geometry.index.getX(i)
+  } else {
+    for (let i = start; i < start + count; i++) yield i
+  }
+}
+
+/**
+ * Bakes each material's UV repeat/offset/rotation (see materialFactory.ts's applyUvTransform,
+ * driven by the material's physical pattern size in the Material Editor) directly into every
+ * assigned mesh's own UV coordinates, instead of leaving it to GLTFExporter's
+ * `KHR_texture_transform` extension. That extension is optional per the glTF spec — a viewer
+ * that doesn't implement it silently ignores the transform and renders the texture at native
+ * 1:1 UV tiling instead of the intended repeat, which is exactly a "texture looks the wrong
+ * scale" bug in any such viewer. Baked UV coordinates are core glTF, so they render identically
+ * in any compliant viewer regardless of extension support — this is what makes the exported GLB
+ * self-sufficient rather than dependent on a specific downstream viewer's feature set.
+ *
+ * Reads every material's transform up front (several meshes commonly share one material
+ * instance — see buildThreeMaterial's id:revision cache — and cloneSkeleton shares material
+ * references between the export clone and the live scene just like it shares geometry, so a
+ * mesh's `.material` here is still the *live* material/texture until this function replaces it).
+ * Each distinct material needing a bake gets exactly one reset-clone (via
+ * cloneMaterialWithResetUv), reused across every mesh that shares it, and every affected mesh is
+ * repointed at that clone — never mutating the original material or texture in place.
+ */
+function bakeTextureTransformsIntoUv(root: THREE.Object3D) {
+  const transformByMaterial = new Map<THREE.Material, THREE.Matrix3>()
+
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh || !mesh.geometry) return
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    for (const material of mats) {
+      if (transformByMaterial.has(material)) continue
+      const matrix = getMaterialUvTransform(material)
+      if (matrix) transformByMaterial.set(material, matrix)
+    }
+  })
+
+  if (transformByMaterial.size === 0) return
+
+  const resetClonesByMaterial = new Map<THREE.Material, THREE.Material>()
+  const resetClone = (material: THREE.Material) => {
+    let clone = resetClonesByMaterial.get(material)
+    if (!clone) {
+      clone = cloneMaterialWithResetUv(material)
+      resetClonesByMaterial.set(material, clone)
+    }
+    return clone
+  }
+
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh || !mesh.geometry) return
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    if (!mats.some((m) => transformByMaterial.has(m))) return
+
+    // Components can share one BufferGeometry instance (repeated identical hardware parts) —
+    // clone before mutating UVs so this never corrupts a sibling mesh or the live editor scene.
+    mesh.geometry = mesh.geometry.clone()
+    const uv = mesh.geometry.attributes.uv as THREE.BufferAttribute | undefined
+
+    if (Array.isArray(mesh.material)) {
+      // Per-face material overrides (see faceMaterials.ts): each geometry group can carry a
+      // different material/transform, so bake only the vertex range each group actually owns.
+      if (uv) {
+        for (const group of mesh.geometry.groups) {
+          const material = mesh.material[group.materialIndex ?? 0]
+          const matrix = material && transformByMaterial.get(material)
+          if (matrix) applyMatrixToUvIndices(uv, matrix, vertexIndicesInRange(mesh.geometry, group.start, group.count))
+        }
+      }
+      mesh.material = mesh.material.map((m) => (transformByMaterial.has(m) ? resetClone(m) : m))
+    } else {
+      const matrix = transformByMaterial.get(mesh.material)
+      if (matrix && uv) applyMatrixToUvIndices(uv, matrix, vertexIndicesInRange(mesh.geometry, 0, uv.count))
+      mesh.material = resetClone(mesh.material)
+    }
+  })
+}
+
 /** One row of the root-level `extras.buildStages` summary — see the module doc comment below. */
 interface BuildStageSummary {
   id: string
@@ -217,6 +347,7 @@ export async function exportGlb({ modelGroup, exportSettings, edgeSettings, fold
   const clone = cloneSkeleton(fbxRoot) as THREE.Object3D
   stripNonExportableChildren(clone)
   applyMaterialExportSettings(clone, exportSettings)
+  bakeTextureTransformsIntoUv(clone)
   const stageAssignments = resolveBuildStageAssignments(folders, folderMembership)
   const buildStages = stampBuildStages(clone, folders, stageAssignments)
   await embedLinkedDetails(clone)
