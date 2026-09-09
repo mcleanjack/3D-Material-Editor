@@ -70,6 +70,9 @@ interface AppState {
 
   // Selection
   selectedComponentIds: string[]
+  /** The last componentId passed to selectComponent (set on both plain and additive clicks) —
+   * the anchor a shift-click range-select measures from in the Object Tree. */
+  lastSelectedComponentId: string | null
   hoveredComponentId: string | null
 
   // Viewport / tools
@@ -98,11 +101,9 @@ interface AppState {
   importFbxFile: (file: File) => Promise<void>
 
   selectComponent: (componentId: string | null, additive?: boolean) => void
+  selectComponentRange: (componentIds: string[]) => void
   setHover: (componentId: string | null) => void
   renameComponent: (componentId: string, name: string) => void
-  /** Selects every object sharing this object's exact display name — e.g. every instance of a
-   * repeated part (screws, nails) that came from the FBX with identical names. */
-  selectAllInstancesOf: (componentId: string) => void
   /** Combines 2+ selected meshes into a single mesh (one merged BufferGeometry, world transforms
    * baked in), replacing their tree nodes with one new node. Ignores any non-mesh objects in the
    * selection; no-ops if fewer than 2 meshes end up selected. */
@@ -223,6 +224,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   folderMembership: {},
 
   selectedComponentIds: [],
+  lastSelectedComponentId: null,
   hoveredComponentId: null,
 
   activeTool: 'select',
@@ -271,6 +273,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         folders: {},
         folderMembership: {},
         selectedComponentIds: [],
+        lastSelectedComponentId: null,
         hoveredComponentId: null,
         statusMessage: `Imported ${file.name} — ${result.objectMeta.size} objects, ${result.fbxMaterialNames.length} FBX materials.`,
       })
@@ -294,11 +297,20 @@ export const useAppStore = create<AppState>((set, get) => ({
           selectedComponentIds: has
             ? s.selectedComponentIds.filter((id) => id !== componentId)
             : [...s.selectedComponentIds, componentId],
+          lastSelectedComponentId: componentId,
         }
       }
-      return { selectedComponentIds: [componentId] }
+      return { selectedComponentIds: [componentId], lastSelectedComponentId: componentId }
     })
     get().sceneManager?.setSelection(get().selectedComponentIds)
+  },
+
+  /** Sets the selection to exactly this set of componentIds — used for a shift-click range
+   * select in the Object Tree, which computes the range itself (it's the one place that knows
+   * the tree's currently rendered top-to-bottom row order) and just needs the result applied. */
+  selectComponentRange: (componentIds) => {
+    set({ selectedComponentIds: componentIds })
+    get().sceneManager?.setSelection(componentIds)
   },
 
   setHover: (componentId) => {
@@ -325,17 +337,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     modelRoot?.traverse((obj) => {
       if (obj.userData.componentId === componentId) obj.name = trimmed
     })
-  },
-
-  selectAllInstancesOf: (componentId) => {
-    const { objectMeta } = get()
-    const target = objectMeta.get(componentId)
-    if (!target) return
-    const ids = Array.from(objectMeta.values())
-      .filter((m) => m.name === target.name)
-      .map((m) => m.componentId)
-    set({ selectedComponentIds: ids })
-    get().sceneManager?.setSelection(ids)
   },
 
   mergeSelectedComponents: () => {
@@ -427,6 +428,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         hiddenComponentIds: nextHidden,
         objectTree: nextTree,
         selectedComponentIds: [componentId],
+        lastSelectedComponentId: componentId,
       }
     })
 
