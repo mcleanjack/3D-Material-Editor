@@ -36,6 +36,7 @@ export function buildProjectSnapshot(id: string, name: string): AuthoringProject
     productInfo: app.productInfo,
     faceMaterialAssignments: app.faceMaterialAssignments,
     visibility: Object.fromEntries(Array.from(app.objectMeta.keys()).map((k) => [k, !app.hiddenComponentIds.has(k)])),
+    componentNames: Object.fromEntries(Array.from(app.objectMeta.entries()).map(([k, meta]) => [k, meta.name])),
     folders: app.folders,
     folderMembership: app.folderMembership,
     edgeSettings: app.edgeSettings,
@@ -100,6 +101,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       })
       void app.reapplyAllAssignments()
       app.reapplyProductInfo()
+      app.applyComponentNames(project.componentNames ?? {})
     }
 
     if (project.camera && app.sceneManager) {

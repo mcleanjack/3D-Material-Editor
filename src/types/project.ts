@@ -25,6 +25,11 @@ export interface AuthoringProject {
   faceMaterialAssignments: Record<string, Record<number, string>>
   /** componentId -> visible */
   visibility: Record<string, boolean>
+  /** componentId -> display name, capturing any renames (see useAppStore.renameComponent) —
+   * without this, re-importing the source FBX on open would regenerate every name straight from
+   * the FBX's own object names, silently reverting a rename. Optional for backward compatibility
+   * with projects saved before renaming existed. */
+  componentNames?: Record<string, string>
   /** componentId -> product/supplier metadata (see src/types/product.ts) — independent of
    * material assignment, face-level material groups, and component edges. Optional for backward
    * compatibility with projects saved before this feature existed. */
