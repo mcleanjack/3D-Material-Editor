@@ -1,9 +1,8 @@
 import { create } from 'zustand'
 import * as THREE from 'three'
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import type { ObjectMeta, EdgeSettings, ExportSettings } from '../types/scene'
 import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings } from '../types/scene'
-import { removeNodesFromTree, renameNodeInTree, type ObjectTreeNode } from '../types/tree'
+import { renameNodeInTree, type ObjectTreeNode } from '../types/tree'
 import type { TreeFolder } from '../types/folder'
 import { collectFolderComponentIds, getBuildStageFolders } from '../types/folder'
 import type { SunSettings } from '../types/sun'
@@ -15,7 +14,7 @@ import { storeAssetFile } from '../db/assetCache'
 import { SceneManager, type ProjectionMode } from '../three/SceneManager'
 import { EdgePreviewController } from '../three/edges/fatLineEdges'
 import { buildThreeMaterial } from '../three/materialFactory'
-import { getCanonicalGeometry, getFaceCount, rebuildMeshFaceMaterials, restoreCanonicalGeometry, setCanonicalGeometry } from '../three/faceMaterials'
+import { getCanonicalGeometry, getFaceCount, rebuildMeshFaceMaterials, restoreCanonicalGeometry } from '../three/faceMaterials'
 import { useMaterialLibraryStore } from './useMaterialLibraryStore'
 import { makeId } from '../utils/id'
 
@@ -104,13 +103,6 @@ interface AppState {
   selectComponentRange: (componentIds: string[]) => void
   setHover: (componentId: string | null) => void
   renameComponent: (componentId: string, name: string) => void
-  /** Combines 2+ selected meshes into a single mesh (one merged BufferGeometry, world transforms
-   * baked in), replacing their tree nodes with one new node. Ignores any non-mesh objects in the
-   * selection; no-ops if fewer than 2 meshes end up selected. Each source mesh's own assigned
-   * material is preserved as a per-face override on the merged mesh (see faceMaterials.ts) so
-   * distinct materials round-trip through reapplyAllAssignments just like any other
-   * multi-material mesh, not just at the moment of the merge. */
-  mergeSelectedComponents: () => Promise<void>
 
   toggleVisibility: (componentId: string) => void
   isolateSelected: () => void
@@ -340,134 +332,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     modelRoot?.traverse((obj) => {
       if (obj.userData.componentId === componentId) obj.name = trimmed
     })
-  },
-
-  mergeSelectedComponents: async () => {
-    const { modelRoot, selectedComponentIds, objectMeta, objectTree, materialAssignments } = get()
-    if (!modelRoot || !objectTree || selectedComponentIds.length < 2) return
-
-    const wantedIds = new Set(selectedComponentIds)
-    const meshes: THREE.Mesh[] = []
-    modelRoot.traverse((obj) => {
-      const id = obj.userData.componentId as string | undefined
-      if (id && wantedIds.has(id) && (obj as THREE.Mesh).isMesh) meshes.push(obj as THREE.Mesh)
-    })
-    if (meshes.length < 2) return
-
-    // Bake each mesh's world transform into its own geometry (cloned — the same BufferGeometry
-    // is commonly shared by every instance of a repeated part, so mutating it in place would
-    // corrupt every other un-merged instance still using it), all relative to modelRoot's own
-    // frame, so the single merged mesh can be added as modelRoot's child with an identity
-    // transform and still land exactly where the originals were.
-    modelRoot.updateWorldMatrix(true, true)
-    const invRoot = new THREE.Matrix4().copy(modelRoot.matrixWorld).invert()
-    const geometries = meshes.map((mesh) => {
-      const geometry = mesh.geometry.clone()
-      const local = new THREE.Matrix4().multiplyMatrices(invRoot, mesh.matrixWorld)
-      geometry.applyMatrix4(local)
-      return geometry
-    })
-
-    // One material slot per source mesh (per-face multi-material meshes contribute only their
-    // first material — merging preserves the common "identical repeated part" case exactly;
-    // finer per-face detail on an individual instance is not preserved through a merge).
-    const materialsPerMesh = meshes.map((mesh) => (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material))
-    const uniformMaterial = materialsPerMesh.every((m) => m === materialsPerMesh[0])
-
-    const mergedGeometry = mergeGeometries(geometries, !uniformMaterial)
-    if (!mergedGeometry) return
-
-    const componentId = makeId('merged')
-    const baseName = objectMeta.get(meshes[0].userData.componentId as string)?.name ?? 'Merged Object'
-    const mergedMesh = new THREE.Mesh(mergedGeometry, uniformMaterial ? materialsPerMesh[0] : materialsPerMesh)
-    mergedMesh.name = `${baseName} (merged x${meshes.length})`
-    mergedMesh.userData.componentId = componentId
-    // Registers the merge into the exact same canonical-geometry / originalMaterial machinery
-    // every other mesh uses (see faceMaterials.ts and the "no face overrides" branch below in
-    // reapplyAllAssignments) — without this, the very next *unrelated* material assignment
-    // anywhere else in the scene would trigger reapplyAllAssignments(), which walks every mesh
-    // and, finding nothing tracked for this one, would have nothing to reconstruct its merged
-    // material array from. originalMaterial mirrors how a real multi-sub-material FBX mesh
-    // already represents "several materials, nothing explicitly assigned" — the same fallback
-    // a mesh that's never had an app-level assignment relies on.
-    setCanonicalGeometry(mergedMesh, mergedGeometry)
-    mergedMesh.userData.originalMaterial = materialsPerMesh
-    modelRoot.add(mergedMesh)
-
-    const removedIds = meshes.map((mesh) => mesh.userData.componentId as string)
-    for (const mesh of meshes) mesh.parent?.remove(mesh)
-
-    const removedIdSet = new Set(removedIds)
-    const groupMaterialIds = removedIds.map((id) => materialAssignments[id])
-
-    // Each source mesh's own assigned material (when it has one) becomes an explicit per-face
-    // override on the merged mesh — the same representation assignMaterialToFaceSelection
-    // already uses for "several materials, one mesh" — so the merge is fully re-derivable
-    // through reapplyAllAssignments, not just correct at the instant of the merge. A source mesh
-    // with no app-level assignment (still showing its raw FBX material) can't be expressed this
-    // way and falls back to whatever originalMaterial covers it — correct now, but only durably
-    // correct when every differing group has a trackable id.
-    const faceOverrides: Record<number, string> = {}
-    let faceOffset = 0
-    for (let i = 0; i < geometries.length; i++) {
-      const faceCount = getFaceCount(geometries[i])
-      const materialId = groupMaterialIds[i]
-      if (i > 0 && materialId && materialId !== groupMaterialIds[0]) {
-        for (let f = 0; f < faceCount; f++) faceOverrides[faceOffset + f] = materialId
-      }
-      faceOffset += faceCount
-    }
-
-    set((s) => {
-      const nextObjectMeta = new Map(s.objectMeta)
-      for (const id of removedIds) nextObjectMeta.delete(id)
-      nextObjectMeta.set(componentId, {
-        componentId,
-        name: mergedMesh.name,
-        fbxMaterialNames: [],
-        assignedMaterialId: null,
-        visible: true,
-        isMesh: true,
-      })
-
-      const nextFolderMembership = { ...s.folderMembership }
-      for (const id of removedIds) delete nextFolderMembership[id]
-
-      const nextMaterialAssignments = { ...s.materialAssignments }
-      for (const id of removedIds) delete nextMaterialAssignments[id]
-      if (groupMaterialIds[0]) nextMaterialAssignments[componentId] = groupMaterialIds[0]
-
-      const nextFaceMaterialAssignments = { ...s.faceMaterialAssignments }
-      for (const id of removedIds) delete nextFaceMaterialAssignments[id]
-      if (Object.keys(faceOverrides).length > 0) nextFaceMaterialAssignments[componentId] = faceOverrides
-
-      const nextProductInfo = { ...s.productInfo }
-      for (const id of removedIds) delete nextProductInfo[id]
-
-      const nextHidden = new Set(s.hiddenComponentIds)
-      for (const id of removedIds) nextHidden.delete(id)
-
-      const strippedTree = s.objectTree ? removeNodesFromTree(s.objectTree, removedIdSet) : s.objectTree
-      const mergedNode: ObjectTreeNode = { componentId, name: mergedMesh.name, isMesh: true, children: [] }
-      const nextTree = strippedTree ? { ...strippedTree, children: [...strippedTree.children, mergedNode] } : strippedTree
-
-      return {
-        objectMeta: nextObjectMeta,
-        folderMembership: nextFolderMembership,
-        materialAssignments: nextMaterialAssignments,
-        faceMaterialAssignments: nextFaceMaterialAssignments,
-        productInfo: nextProductInfo,
-        hiddenComponentIds: nextHidden,
-        objectTree: nextTree,
-        selectedComponentIds: [componentId],
-        lastSelectedComponentId: componentId,
-      }
-    })
-
-    get().reapplyProductInfo()
-    await get().reapplyAllAssignments()
-    get().sceneManager?.setSelection([componentId])
-    set({ statusMessage: `Merged ${meshes.length} objects into "${mergedMesh.name}".` })
   },
 
   toggleVisibility: (componentId) => {
