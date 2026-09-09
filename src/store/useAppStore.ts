@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import * as THREE from 'three'
 import type { ObjectMeta, EdgeSettings, ExportSettings } from '../types/scene'
 import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings } from '../types/scene'
-import type { ObjectTreeNode } from '../types/tree'
+import { renameNodeInTree, type ObjectTreeNode } from '../types/tree'
 import type { TreeFolder } from '../types/folder'
 import { collectFolderComponentIds, getBuildStageFolders } from '../types/folder'
 import type { SunSettings } from '../types/sun'
@@ -98,6 +98,7 @@ interface AppState {
 
   selectComponent: (componentId: string | null, additive?: boolean) => void
   setHover: (componentId: string | null) => void
+  renameComponent: (componentId: string, name: string) => void
 
   toggleVisibility: (componentId: string) => void
   isolateSelected: () => void
@@ -295,6 +296,27 @@ export const useAppStore = create<AppState>((set, get) => ({
   setHover: (componentId) => {
     set({ hoveredComponentId: componentId })
     get().sceneManager?.setHover(componentId)
+  },
+
+  renameComponent: (componentId, name) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    set((s) => {
+      const meta = s.objectMeta.get(componentId)
+      if (!meta) return {}
+      const objectMeta = new Map(s.objectMeta)
+      objectMeta.set(componentId, { ...meta, name: trimmed })
+      return {
+        objectMeta,
+        objectTree: s.objectTree ? renameNodeInTree(s.objectTree, componentId, trimmed) : s.objectTree,
+      }
+    })
+    // Keeps the live THREE.Object3D's own name in sync too — GLTFExporter names glTF nodes
+    // straight from Object3D.name, and exportGlb.ts's build-stage summary reads it as well.
+    const { modelRoot } = get()
+    modelRoot?.traverse((obj) => {
+      if (obj.userData.componentId === componentId) obj.name = trimmed
+    })
   },
 
   toggleVisibility: (componentId) => {

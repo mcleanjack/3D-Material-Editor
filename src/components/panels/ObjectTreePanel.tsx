@@ -483,8 +483,10 @@ function ProductInfoFields({ componentIds }: { componentIds: string[] }) {
   const objectMeta = useAppStore((s) => s.objectMeta)
   const storedInfo = useAppStore((s) => (componentIds.length === 1 ? s.productInfo[componentIds[0]] : undefined))
   const setProductInfoForComponents = useAppStore((s) => s.setProductInfoForComponents)
+  const renameComponent = useAppStore((s) => s.renameComponent)
   const [draft, setDraft] = useState<ProductInfo>(() => storedInfo ?? EMPTY_PRODUCT_INFO)
   const [justSaved, setJustSaved] = useState(false)
+  const [renaming, setRenaming] = useState(false)
 
   const isMulti = componentIds.length > 1
   const objectName = componentIds.length === 1 ? objectMeta.get(componentIds[0])?.name ?? componentIds[0] : null
@@ -496,8 +498,19 @@ function ProductInfoFields({ componentIds }: { componentIds: string[] }) {
 
   return (
     <div className="border-t px-3 py-2.5" style={{ borderColor: 'var(--panel-border)' }}>
-      <div className="mb-1.5 text-[11px] font-medium text-[var(--text)]">
-        {isMulti ? `Product Information — ${componentIds.length} selected objects` : `Product Information — "${objectName}"`}
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-[var(--text)]">
+        <span className="min-w-0 flex-1 truncate">
+          {isMulti ? `Product Information — ${componentIds.length} selected objects` : `Product Information — "${objectName}"`}
+        </span>
+        {!isMulti && (
+          <button
+            title="Rename object"
+            className="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100"
+            onClick={() => setRenaming(true)}
+          >
+            <Icon name="edit" size={11} />
+          </button>
+        )}
       </div>
       {isMulti && (
         <p className="mb-1.5 text-[10px] leading-relaxed text-[var(--text-faint)]">
@@ -576,6 +589,18 @@ function ProductInfoFields({ componentIds }: { componentIds: string[] }) {
         </button>
         {justSaved && <span className="text-[10px] text-emerald-400">Saved</span>}
       </div>
+      {renaming && objectName !== null && (
+        <PromptDialog
+          title="Rename Object"
+          initialValue={objectName}
+          confirmLabel="RENAME"
+          onCancel={() => setRenaming(false)}
+          onConfirm={(name) => {
+            renameComponent(componentIds[0], name)
+            setRenaming(false)
+          }}
+        />
+      )}
     </div>
   )
 }
