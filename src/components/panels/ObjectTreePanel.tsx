@@ -38,6 +38,15 @@ function readDragPayload(e: React.DragEvent): DragPayload | null {
   }
 }
 
+/** Which half of `e.currentTarget` the pointer is over — top half means "insert before this
+ * row", bottom half means "insert after". Computed fresh from the event each time it's needed
+ * (both on dragover, for the visual indicator, and again on drop, for the actual move) rather
+ * than trusted from state alone. */
+function dragEdgeFromEvent(e: React.DragEvent): 'top' | 'bottom' {
+  const rect = e.currentTarget.getBoundingClientRect()
+  return e.clientY - rect.top < rect.height / 2 ? 'top' : 'bottom'
+}
+
 function useNodeMap(root: ObjectTreeNode | null): Map<string, ObjectTreeNode> {
   return useMemo(() => {
     const map = new Map<string, ObjectTreeNode>()
@@ -124,8 +133,28 @@ function computeVisibleOrder(
   return out
 }
 
-function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; query: string }) {
+/**
+ * `folderId`/`nextSiblingComponentId` are only passed when this row is a folder's direct member
+ * (from FolderRow's own memberNodes.map) — that's what enables the drag-to-reorder drop target
+ * below; a row rendered as a plain hierarchy child (via visibleChildren, including a member
+ * node's own descendants) doesn't receive them and so isn't reorderable, since only a folder's
+ * direct members have a meaningful position to drag into.
+ */
+function TreeRow({
+  node,
+  depth,
+  query,
+  folderId,
+  nextSiblingComponentId,
+}: {
+  node: ObjectTreeNode
+  depth: number
+  query: string
+  folderId?: string
+  nextSiblingComponentId?: string | null
+}) {
   const [expanded, setExpanded] = useState(true)
+  const [dropEdge, setDropEdge] = useState<'top' | 'bottom' | null>(null)
   const objectTree = useAppStore((s) => s.objectTree)
   const folders = useAppStore((s) => s.folders)
   const selectedComponentIds = useAppStore((s) => s.selectedComponentIds)
@@ -136,6 +165,7 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
   const hasProductInfo = useAppStore((s) => !!s.productInfo[node.componentId])
   const selectComponent = useAppStore((s) => s.selectComponent)
   const selectComponentRange = useAppStore((s) => s.selectComponentRange)
+  const reorderComponentsInFolder = useAppStore((s) => s.reorderComponentsInFolder)
   const setHover = useAppStore((s) => s.setHover)
   const toggleVisibility = useAppStore((s) => s.toggleVisibility)
   const nodeMap = useNodeMap(objectTree)
@@ -165,7 +195,29 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
           e.dataTransfer.setData('application/json', JSON.stringify({ kind: 'components', ids } satisfies DragPayload))
           e.dataTransfer.effectAllowed = 'move'
         }}
-        className={`flex items-center gap-1 rounded px-1 py-0.5 text-xs cursor-pointer ${
+        onDragOver={(e) => {
+          if (!folderId) return
+          e.preventDefault()
+          e.stopPropagation()
+          setDropEdge(dragEdgeFromEvent(e))
+        }}
+        onDragLeave={() => setDropEdge(null)}
+        onDrop={(e) => {
+          if (!folderId) return
+          e.preventDefault()
+          e.stopPropagation()
+          // Computed fresh from the drop event itself, not read back from dropEdge state — that
+          // state is only for the visual indicator and can still reflect the previous dragover by
+          // the time this handler runs (a drop right on the heels of the last dragover can beat a
+          // React re-render), which would silently use a stale edge for the actual move.
+          const edge = dragEdgeFromEvent(e)
+          setDropEdge(null)
+          const payload = readDragPayload(e)
+          if (!payload || payload.kind !== 'components') return
+          const beforeComponentId = edge === 'top' ? node.componentId : (nextSiblingComponentId ?? null)
+          reorderComponentsInFolder(payload.ids, folderId, beforeComponentId)
+        }}
+        className={`relative flex items-center gap-1 rounded px-1 py-0.5 text-xs cursor-pointer ${
           selected ? 'bg-blue-600/30 text-[var(--text)]' : hovered ? 'bg-white/5' : 'text-[var(--text-dim)]'
         }`}
         style={{ paddingLeft: depth * 14 + 4 }}
@@ -212,6 +264,11 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
         >
           <Icon name={hidden ? 'eyeOff' : 'eye'} size={12} />
         </button>
+        {dropEdge && (
+          <div
+            className={`pointer-events-none absolute inset-x-0 h-0.5 rounded bg-blue-400 ${dropEdge === 'top' ? '-top-px' : '-bottom-px'}`}
+          />
+        )}
       </div>
       {isExpanded && hasChildren && (
         <div>
@@ -356,8 +413,15 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
           {childFolders.map((f) => (
             <FolderRow key={f.id} folder={f} depth={depth + 1} query={query} />
           ))}
-          {memberNodes.map((n) => (
-            <TreeRow key={n.componentId} node={n} depth={depth + 1} query={query} />
+          {memberNodes.map((n, i) => (
+            <TreeRow
+              key={n.componentId}
+              node={n}
+              depth={depth + 1}
+              query={query}
+              folderId={folder.id}
+              nextSiblingComponentId={memberNodes[i + 1]?.componentId ?? null}
+            />
           ))}
         </div>
       )}

@@ -113,6 +113,13 @@ interface AppState {
   renameFolder: (folderId: string, name: string) => void
   deleteFolder: (folderId: string) => void
   moveComponentsToFolder: (componentIds: string[], folderId: string | null) => void
+  /** Moves componentIds into folderId (relabeling them if they belonged elsewhere, or weren't
+   * grouped at all) positioned immediately before beforeComponentId within that folder's member
+   * list, or at the end when null. Powers drag-to-reorder within a folder/stage in the Object
+   * Tree — folderMembership's own key order is what FolderRow renders members in, so this
+   * rebuilds the whole record with the target folder's member keys in the new order rather than
+   * needing a separate ordering field. */
+  reorderComponentsInFolder: (componentIds: string[], folderId: string, beforeComponentId: string | null) => void
   moveFolderToFolder: (folderId: string, parentId: string | null) => void
   toggleFolderVisibility: (folderId: string) => void
   selectFolderContents: (folderId: string, additive?: boolean) => void
@@ -438,6 +445,41 @@ export const useAppStore = create<AppState>((set, get) => ({
         else delete membership[cid]
       }
       return { folderMembership: membership }
+    })
+  },
+
+  reorderComponentsInFolder: (componentIds, folderId, beforeComponentId) => {
+    if (componentIds.length === 0) return
+    set((s) => {
+      const draggedSet = new Set(componentIds)
+      if (beforeComponentId && draggedSet.has(beforeComponentId)) return {} // dropped onto itself/its own group
+
+      const relabeled = { ...s.folderMembership }
+      for (const id of componentIds) relabeled[id] = folderId
+
+      // Object.entries preserves key insertion order, which is exactly the order FolderRow
+      // renders memberNodes in — so "reordering" means rebuilding this record with the target
+      // folder's member keys re-inserted in the new order, not tracking a separate index.
+      const entries = Object.entries(relabeled)
+      const folderMembers = entries.filter(([, fid]) => fid === folderId)
+      const remaining = folderMembers.filter(([cid]) => !draggedSet.has(cid))
+      const draggedEntries: [string, string][] = componentIds.map((id) => [id, folderId])
+
+      let insertAt = beforeComponentId ? remaining.findIndex(([cid]) => cid === beforeComponentId) : remaining.length
+      if (insertAt === -1) insertAt = remaining.length
+      const newFolderOrder = [...remaining.slice(0, insertAt), ...draggedEntries, ...remaining.slice(insertAt)]
+
+      const result: [string, string][] = []
+      let spliced = false
+      for (const entry of entries) {
+        if (entry[1] !== folderId) {
+          result.push(entry)
+        } else if (!spliced) {
+          result.push(...newFolderOrder)
+          spliced = true
+        }
+      }
+      return { folderMembership: Object.fromEntries(result) }
     })
   },
 
