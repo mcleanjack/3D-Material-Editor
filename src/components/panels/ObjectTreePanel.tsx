@@ -413,7 +413,7 @@ function SelectionAssignment() {
           title={selectedComponentIds.length < 2 ? 'Select 2 or more objects to merge' : undefined}
           disabled={selectedComponentIds.length < 2}
           className="shrink-0 rounded bg-[#2a2c33] px-1.5 py-1 text-[11px] text-[var(--text)] hover:bg-[#33353d] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[#2a2c33]"
-          onClick={() => mergeSelectedComponents()}
+          onClick={() => void mergeSelectedComponents()}
         >
           <span className="inline-flex items-center gap-1">
             <Icon name="copy" size={11} />
