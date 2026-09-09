@@ -76,17 +76,69 @@ function folderMatchesSearch(
   return false
 }
 
+/** Appends `node`'s own componentId, then recurses into its visible children (those not pulled
+ * into a folder), in the exact order TreeRow renders them — a depth-first, top-to-bottom walk. */
+function flattenNodeOrder(node: ObjectTreeNode, folderMembership: Record<string, string>, out: string[]) {
+  out.push(node.componentId)
+  for (const child of node.children) {
+    if (folderMembership[child.componentId]) continue
+    flattenNodeOrder(child, folderMembership, out)
+  }
+}
+
+/** Same idea as flattenNodeOrder but for a folder's own contents, in the exact order FolderRow
+ * renders them: its child folders (recursively), then its direct member objects. */
+function flattenFolderOrder(
+  folderId: string,
+  folders: Record<string, TreeFolder>,
+  folderMembership: Record<string, string>,
+  nodeMap: Map<string, ObjectTreeNode>,
+  out: string[],
+) {
+  for (const f of Object.values(folders)) {
+    if (f.parentId === folderId) flattenFolderOrder(f.id, folders, folderMembership, nodeMap, out)
+  }
+  for (const [componentId, fid] of Object.entries(folderMembership)) {
+    if (fid !== folderId) continue
+    const node = nodeMap.get(componentId)
+    if (node) flattenNodeOrder(node, folderMembership, out)
+  }
+}
+
+/** Every object row's componentId, top-to-bottom in the same order the Object Tree currently
+ * renders them (root folders and their contents, then the ungrouped tree) — resolves a
+ * shift-click range select. Assumes every row is expanded, matching each row's default state; a
+ * manually collapsed branch only approximates here, same as it would be ambiguous for any
+ * range-select UI to guess whether a collapsed branch's contents should be included. */
+function computeVisibleOrder(
+  objectTree: ObjectTreeNode | null,
+  folders: Record<string, TreeFolder>,
+  folderMembership: Record<string, string>,
+  nodeMap: Map<string, ObjectTreeNode>,
+): string[] {
+  const out: string[] = []
+  for (const f of Object.values(folders)) {
+    if (f.parentId === null) flattenFolderOrder(f.id, folders, folderMembership, nodeMap, out)
+  }
+  if (objectTree) flattenNodeOrder(objectTree, folderMembership, out)
+  return out
+}
+
 function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; query: string }) {
   const [expanded, setExpanded] = useState(true)
+  const objectTree = useAppStore((s) => s.objectTree)
+  const folders = useAppStore((s) => s.folders)
   const selectedComponentIds = useAppStore((s) => s.selectedComponentIds)
+  const lastSelectedComponentId = useAppStore((s) => s.lastSelectedComponentId)
   const hoveredComponentId = useAppStore((s) => s.hoveredComponentId)
   const hiddenComponentIds = useAppStore((s) => s.hiddenComponentIds)
   const folderMembership = useAppStore((s) => s.folderMembership)
   const hasProductInfo = useAppStore((s) => !!s.productInfo[node.componentId])
   const selectComponent = useAppStore((s) => s.selectComponent)
-  const selectAllInstancesOf = useAppStore((s) => s.selectAllInstancesOf)
+  const selectComponentRange = useAppStore((s) => s.selectComponentRange)
   const setHover = useAppStore((s) => s.setHover)
   const toggleVisibility = useAppStore((s) => s.toggleVisibility)
+  const nodeMap = useNodeMap(objectTree)
 
   if (query && !nodeMatchesSearch(node, query)) return null
 
@@ -119,10 +171,19 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
         style={{ paddingLeft: depth * 14 + 4 }}
         onMouseEnter={() => setHover(node.componentId)}
         onMouseLeave={() => setHover(null)}
-        title="Click to select. Shift-click to select every object with this same name."
+        title="Click to select. Shift-click to select the range from the last selected object. Ctrl/Cmd-click to add or remove one."
         onClick={(e) => {
-          if (e.shiftKey) selectAllInstancesOf(node.componentId)
-          else selectComponent(node.componentId, e.metaKey || e.ctrlKey)
+          if (e.shiftKey && lastSelectedComponentId) {
+            const order = computeVisibleOrder(objectTree, folders, folderMembership, nodeMap)
+            const anchorIndex = order.indexOf(lastSelectedComponentId)
+            const targetIndex = order.indexOf(node.componentId)
+            if (anchorIndex !== -1 && targetIndex !== -1) {
+              const [lo, hi] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
+              selectComponentRange(order.slice(lo, hi + 1))
+              return
+            }
+          }
+          selectComponent(node.componentId, e.metaKey || e.ctrlKey)
         }}
       >
         <button
