@@ -1,4 +1,4 @@
-import { useRef, useMemo, useState } from 'react'
+import { useEffect, useRef, useMemo, useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import type { ObjectTreeNode } from '../../types/tree'
 import type { TreeFolder } from '../../types/folder'
@@ -549,6 +549,89 @@ function LinkedDetailField({ value, onChange }: { value: LinkedDetailRef | null;
   )
 }
 
+interface ProductInfoOption {
+  componentId: string
+  name: string
+  info: ProductInfo
+}
+
+/** A type-to-filter dropdown listing every object that already has Product Information saved,
+ * so a repeated product (the same material spec sheet, supplier contact, etc. used on several
+ * objects) can be copied in instead of retyped. Picking an option loads its stored fields into
+ * the current draft — same as typing them by hand, still requires Save to actually persist. */
+function ProductInfoTemplatePicker({ excludeComponentIds, onPick }: { excludeComponentIds: string[]; onPick: (info: ProductInfo) => void }) {
+  const productInfo = useAppStore((s) => s.productInfo)
+  const objectMeta = useAppStore((s) => s.objectMeta)
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const excludeSet = useMemo(() => new Set(excludeComponentIds), [excludeComponentIds])
+
+  const options = useMemo<ProductInfoOption[]>(() => {
+    const q = query.trim().toLowerCase()
+    return Object.entries(productInfo)
+      .filter(([componentId]) => !excludeSet.has(componentId))
+      .map(([componentId, info]) => ({ componentId, name: objectMeta.get(componentId)?.name ?? componentId, info }))
+      .filter((o) => !q || o.name.toLowerCase().includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [productInfo, objectMeta, excludeSet, query])
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [])
+
+  if (Object.keys(productInfo).length === 0) return null
+
+  return (
+    <div ref={containerRef} className="relative mb-1.5">
+      <div className="flex items-center gap-1.5 rounded border border-[var(--panel-border)] bg-[#2a2c33] px-2 py-1">
+        <Icon name="search" size={12} className="shrink-0 text-[var(--text-faint)]" />
+        <input
+          className="w-full bg-transparent text-xs text-[var(--text)] outline-none placeholder:text-[var(--text-faint)]"
+          placeholder="Copy from another object…"
+          value={query}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => {
+            setQuery(e.target.value)
+            setOpen(true)
+          }}
+        />
+      </div>
+      {open && (
+        <div
+          className="absolute inset-x-0 top-full z-10 mt-1 max-h-40 overflow-y-auto rounded border shadow-lg"
+          style={{ borderColor: 'var(--panel-border)', backgroundColor: '#2a2c33' }}
+        >
+          {options.length === 0 ? (
+            <div className="px-2 py-1.5 text-[11px] text-[var(--text-faint)]">No matching objects</div>
+          ) : (
+            options.map((o) => (
+              <button
+                key={o.componentId}
+                type="button"
+                className="block w-full truncate px-2 py-1.5 text-left text-[11px] text-[var(--text)] hover:bg-[#33353d]"
+                title={o.name}
+                onClick={() => {
+                  onPick(o.info)
+                  setQuery('')
+                  setOpen(false)
+                }}
+              >
+                {o.name}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Keyed by the (sorted) selected componentId set from ProductInfoSection so switching the
  * selection — a different single object, or a different multi-select — remounts this with fresh
  * draft state, simpler and less error-prone than a useEffect re-sync. Edits are local (draft)
@@ -598,6 +681,13 @@ function ProductInfoFields({ componentIds }: { componentIds: string[] }) {
           information already on them individually.
         </p>
       )}
+      <ProductInfoTemplatePicker
+        excludeComponentIds={componentIds}
+        onPick={(info) => {
+          setDraft(info)
+          setJustSaved(false)
+        }}
+      />
       <div className="space-y-2">
         <ProductInfoField label="Description">
           <textarea
