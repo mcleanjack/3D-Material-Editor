@@ -20,8 +20,8 @@ import * as THREE from 'three'
  * translated back to stable, canonical face identity.
  */
 
-const CANONICAL_GEOMETRY_KEY = 'canonicalGeometry'
-const DERIVED_MAP_KEY = 'derivedFaceToCanonical'
+export const CANONICAL_GEOMETRY_KEY = 'canonicalGeometry'
+export const DERIVED_MAP_KEY = 'derivedFaceToCanonical'
 
 export function setCanonicalGeometry(mesh: THREE.Mesh, geometry: THREE.BufferGeometry) {
   mesh.userData[CANONICAL_GEOMETRY_KEY] = geometry

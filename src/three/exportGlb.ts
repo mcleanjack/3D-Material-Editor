@@ -8,8 +8,20 @@ import type { ProductInfo } from '../types/product'
 import { getAssetBlob } from '../db/assetCache'
 import { buildExportEdgesMesh } from './edges/tubeEdges'
 import { injectGlbRootExtras } from './glbBinary'
+import { CANONICAL_GEOMETRY_KEY, DERIVED_MAP_KEY } from './faceMaterials'
 
 const PREVIEW_LINE_NAME = '__edge_preview_line__'
+
+/** userData keys that exist purely to support in-app editing (the canonical/pre-face-override
+ * geometry and material every mesh's live authoring state can fall back to — see
+ * faceMaterials.ts and fbxImport.ts) and were never meant to leave the app. THREE's
+ * GLTFExporter serializes every remaining userData entry straight into that node's glTF
+ * `extras` verbatim, so left in place these dump a raw BufferGeometry (its full vertex/index
+ * data, duplicated on top of the mesh's own accessors) and a raw Material/Texture reference
+ * into every mesh's exported extras — needless bloat, and noise for any downstream consumer
+ * trying to read the metadata that's actually meant for them (componentId, productInfo, the
+ * build-stage fields). */
+const INTERNAL_USER_DATA_KEYS = [CANONICAL_GEOMETRY_KEY, DERIVED_MAP_KEY, 'originalMaterial'] as const
 
 function stripNonExportableChildren(root: THREE.Object3D) {
   const toRemove: THREE.Object3D[] = []
@@ -17,6 +29,12 @@ function stripNonExportableChildren(root: THREE.Object3D) {
     if (obj.name === PREVIEW_LINE_NAME) toRemove.push(obj)
   })
   for (const obj of toRemove) obj.parent?.remove(obj)
+}
+
+function stripInternalUserData(root: THREE.Object3D) {
+  root.traverse((obj) => {
+    for (const key of INTERNAL_USER_DATA_KEYS) delete obj.userData[key]
+  })
 }
 
 function neutralMaterial(): THREE.MeshStandardMaterial {
@@ -346,6 +364,7 @@ export async function exportGlb({ modelGroup, exportSettings, edgeSettings, fold
   // hierarchies too (most Revit exports), so it's used unconditionally rather than branching.
   const clone = cloneSkeleton(fbxRoot) as THREE.Object3D
   stripNonExportableChildren(clone)
+  stripInternalUserData(clone)
   applyMaterialExportSettings(clone, exportSettings)
   bakeTextureTransformsIntoUv(clone)
   const stageAssignments = resolveBuildStageAssignments(folders, folderMembership)
