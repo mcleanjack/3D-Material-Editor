@@ -2,13 +2,15 @@ import { create } from 'zustand'
 import * as THREE from 'three'
 import type { ObjectMeta, EdgeSettings, ExportSettings } from '../types/scene'
 import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings } from '../types/scene'
-import type { ObjectTreeNode } from '../types/tree'
+import { renameNodeInTree, renameNodesInTree, type ObjectTreeNode } from '../types/tree'
 import type { TreeFolder } from '../types/folder'
+import { collectFolderComponentIds, getBuildStageFolders } from '../types/folder'
 import type { SunSettings } from '../types/sun'
 import { DEFAULT_SUN_SETTINGS } from '../types/sun'
 import type { ProductInfo } from '../types/product'
 import { isProductInfoEmpty } from '../types/product'
 import { importFbx } from '../three/fbxImport'
+import { storeAssetFile } from '../db/assetCache'
 import { SceneManager, type ProjectionMode } from '../three/SceneManager'
 import { EdgePreviewController } from '../three/edges/fatLineEdges'
 import { buildThreeMaterial } from '../three/materialFactory'
@@ -33,6 +35,10 @@ interface AppState {
   objectMeta: Map<string, ObjectMeta>
   fbxMaterialNames: string[]
   fbxFileName: string | null
+  /** The imported FBX's own bytes, cached as a blob asset (see db/assetCache.ts) so a
+   * self-contained "Save to File" project export can bundle the source model itself, not just a
+   * reference to its name — see src/utils/projectFile.ts. Null until an FBX has been imported. */
+  fbxAssetId: string | null
   importing: boolean
   importError: string | null
 
@@ -63,6 +69,9 @@ interface AppState {
 
   // Selection
   selectedComponentIds: string[]
+  /** The last componentId passed to selectComponent (set on both plain and additive clicks) —
+   * the anchor a shift-click range-select measures from in the Object Tree. */
+  lastSelectedComponentId: string | null
   hoveredComponentId: string | null
 
   // Viewport / tools
@@ -91,7 +100,15 @@ interface AppState {
   importFbxFile: (file: File) => Promise<void>
 
   selectComponent: (componentId: string | null, additive?: boolean) => void
+  selectComponentRange: (componentIds: string[]) => void
   setHover: (componentId: string | null) => void
+  renameComponent: (componentId: string, name: string) => void
+  /** Bulk version of renameComponent — restores every componentId -> name entry a saved project
+   * recorded (see AuthoringProject.componentNames), needed because re-importing the source FBX
+   * on project open regenerates objectMeta/objectTree straight from the FBX's own object names,
+   * which would otherwise silently revert any rename. componentIds absent from `names` are left
+   * untouched. */
+  applyComponentNames: (names: Record<string, string>) => void
 
   toggleVisibility: (componentId: string) => void
   isolateSelected: () => void
@@ -102,15 +119,36 @@ interface AppState {
   renameFolder: (folderId: string, name: string) => void
   deleteFolder: (folderId: string) => void
   moveComponentsToFolder: (componentIds: string[], folderId: string | null) => void
+  /** Moves componentIds into folderId (relabeling them if they belonged elsewhere, or weren't
+   * grouped at all) positioned immediately before beforeComponentId within that folder's member
+   * list, or at the end when null. Powers drag-to-reorder within a folder/stage in the Object
+   * Tree — folderMembership's own key order is what FolderRow renders members in, so this
+   * rebuilds the whole record with the target folder's member keys in the new order rather than
+   * needing a separate ordering field. */
+  reorderComponentsInFolder: (componentIds: string[], folderId: string, beforeComponentId: string | null) => void
   moveFolderToFolder: (folderId: string, parentId: string | null) => void
   toggleFolderVisibility: (folderId: string) => void
   selectFolderContents: (folderId: string, additive?: boolean) => void
+
+  /** Marks/unmarks a folder as a build stage — see src/types/folder.ts. Marking assigns the
+   * next free stage order (current max + 1); unmarking clears it. */
+  setFolderBuildStage: (folderId: string, isStage: boolean) => void
+  /** Swaps this stage's order with its immediate neighbor in stage sequence — the up/down
+   * reorder control in the Build Stages list. */
+  moveBuildStageOrder: (folderId: string, direction: 'up' | 'down') => void
+  /** Selects a folder's contents and isolates them — the stage preview/stepper reuses this
+   * exact isolate path rather than any new visibility system. */
+  isolateFolder: (folderId: string) => void
 
   assignMaterialToComponents: (materialId: string | null, componentIds: string[]) => Promise<void>
   assignMaterialToFbxMaterialName: (materialId: string | null, fbxMaterialName: string) => Promise<void>
   reapplyAllAssignments: () => Promise<void>
 
   setProductInfo: (componentId: string, info: ProductInfo) => void
+  /** Applies the same ProductInfo to every given componentId in one batched update (mirrors
+   * assignMaterialToComponents' multi-select pattern) — replaces each object's existing product
+   * information, if any, with these identical values. */
+  setProductInfoForComponents: (componentIds: string[], info: ProductInfo) => void
   /** Re-stamps every stored ProductInfo onto the live model's userData.productInfo — needed
    * because the store's record survives across model re-imports/project loads but the actual
    * THREE objects it targets don't. Mirrors reapplyAllAssignments' role for material data. */
@@ -154,23 +192,6 @@ function applyVisibility(root: THREE.Object3D, hidden: Set<string>, isolate: Set
 
 let isolateSet: Set<string> | null = null
 
-/** All componentIds contained by a folder, including via nested subfolders. Pure/read-only —
- * used both by store actions (visibility, selection) and by the tree UI (indicator state). */
-export function collectFolderComponentIds(
-  folders: Record<string, TreeFolder>,
-  folderMembership: Record<string, string>,
-  folderId: string,
-): string[] {
-  const ids: string[] = []
-  for (const [componentId, fid] of Object.entries(folderMembership)) {
-    if (fid === folderId) ids.push(componentId)
-  }
-  for (const folder of Object.values(folders)) {
-    if (folder.parentId === folderId) ids.push(...collectFolderComponentIds(folders, folderMembership, folder.id))
-  }
-  return ids
-}
-
 /** True if `folderId` is `maybeAncestorId` itself, or nested inside it — used to reject a
  * folder-into-folder drag that would create a cycle. */
 function isFolderOrDescendant(folders: Record<string, TreeFolder>, folderId: string, maybeAncestorId: string): boolean {
@@ -191,6 +212,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   objectMeta: new Map(),
   fbxMaterialNames: [],
   fbxFileName: null,
+  fbxAssetId: null,
   importing: false,
   importError: null,
 
@@ -210,6 +232,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   folderMembership: {},
 
   selectedComponentIds: [],
+  lastSelectedComponentId: null,
   hoveredComponentId: null,
 
   activeTool: 'select',
@@ -237,6 +260,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const result = await importFbx(file)
       const sm = get().sceneManager
       sm?.setModel(result.root)
+      const fbxAssetId = await storeAssetFile(file)
 
       isolateSet = null
       set({
@@ -245,6 +269,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         objectMeta: result.objectMeta,
         fbxMaterialNames: result.fbxMaterialNames,
         fbxFileName: file.name,
+        fbxAssetId,
         importing: false,
         materialAssignments: {},
         productInfo: {},
@@ -256,6 +281,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         folders: {},
         folderMembership: {},
         selectedComponentIds: [],
+        lastSelectedComponentId: null,
         hoveredComponentId: null,
         statusMessage: `Imported ${file.name} — ${result.objectMeta.size} objects, ${result.fbxMaterialNames.length} FBX materials.`,
       })
@@ -279,16 +305,67 @@ export const useAppStore = create<AppState>((set, get) => ({
           selectedComponentIds: has
             ? s.selectedComponentIds.filter((id) => id !== componentId)
             : [...s.selectedComponentIds, componentId],
+          lastSelectedComponentId: componentId,
         }
       }
-      return { selectedComponentIds: [componentId] }
+      return { selectedComponentIds: [componentId], lastSelectedComponentId: componentId }
     })
     get().sceneManager?.setSelection(get().selectedComponentIds)
+  },
+
+  /** Sets the selection to exactly this set of componentIds — used for a shift-click range
+   * select in the Object Tree, which computes the range itself (it's the one place that knows
+   * the tree's currently rendered top-to-bottom row order) and just needs the result applied. */
+  selectComponentRange: (componentIds) => {
+    set({ selectedComponentIds: componentIds })
+    get().sceneManager?.setSelection(componentIds)
   },
 
   setHover: (componentId) => {
     set({ hoveredComponentId: componentId })
     get().sceneManager?.setHover(componentId)
+  },
+
+  renameComponent: (componentId, name) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    set((s) => {
+      const meta = s.objectMeta.get(componentId)
+      if (!meta) return {}
+      const objectMeta = new Map(s.objectMeta)
+      objectMeta.set(componentId, { ...meta, name: trimmed })
+      return {
+        objectMeta,
+        objectTree: s.objectTree ? renameNodeInTree(s.objectTree, componentId, trimmed) : s.objectTree,
+      }
+    })
+    // Keeps the live THREE.Object3D's own name in sync too — GLTFExporter names glTF nodes
+    // straight from Object3D.name, and exportGlb.ts's build-stage summary reads it as well.
+    const { modelRoot } = get()
+    modelRoot?.traverse((obj) => {
+      if (obj.userData.componentId === componentId) obj.name = trimmed
+    })
+  },
+
+  applyComponentNames: (names) => {
+    if (Object.keys(names).length === 0) return
+    set((s) => {
+      const objectMeta = new Map(s.objectMeta)
+      for (const [componentId, name] of Object.entries(names)) {
+        const meta = objectMeta.get(componentId)
+        if (meta && meta.name !== name) objectMeta.set(componentId, { ...meta, name })
+      }
+      return {
+        objectMeta,
+        objectTree: s.objectTree ? renameNodesInTree(s.objectTree, names) : s.objectTree,
+      }
+    })
+    const { modelRoot } = get()
+    modelRoot?.traverse((obj) => {
+      const componentId = obj.userData.componentId as string | undefined
+      const name = componentId ? names[componentId] : undefined
+      if (name !== undefined) obj.name = name
+    })
   },
 
   toggleVisibility: (componentId) => {
@@ -398,6 +475,41 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
+  reorderComponentsInFolder: (componentIds, folderId, beforeComponentId) => {
+    if (componentIds.length === 0) return
+    set((s) => {
+      const draggedSet = new Set(componentIds)
+      if (beforeComponentId && draggedSet.has(beforeComponentId)) return {} // dropped onto itself/its own group
+
+      const relabeled = { ...s.folderMembership }
+      for (const id of componentIds) relabeled[id] = folderId
+
+      // Object.entries preserves key insertion order, which is exactly the order FolderRow
+      // renders memberNodes in — so "reordering" means rebuilding this record with the target
+      // folder's member keys re-inserted in the new order, not tracking a separate index.
+      const entries = Object.entries(relabeled)
+      const folderMembers = entries.filter(([, fid]) => fid === folderId)
+      const remaining = folderMembers.filter(([cid]) => !draggedSet.has(cid))
+      const draggedEntries: [string, string][] = componentIds.map((id) => [id, folderId])
+
+      let insertAt = beforeComponentId ? remaining.findIndex(([cid]) => cid === beforeComponentId) : remaining.length
+      if (insertAt === -1) insertAt = remaining.length
+      const newFolderOrder = [...remaining.slice(0, insertAt), ...draggedEntries, ...remaining.slice(insertAt)]
+
+      const result: [string, string][] = []
+      let spliced = false
+      for (const entry of entries) {
+        if (entry[1] !== folderId) {
+          result.push(entry)
+        } else if (!spliced) {
+          result.push(...newFolderOrder)
+          spliced = true
+        }
+      }
+      return { folderMembership: Object.fromEntries(result) }
+    })
+  },
+
   moveFolderToFolder: (folderId, parentId) => {
     set((s) => {
       const folder = s.folders[folderId]
@@ -438,6 +550,46 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { selectedComponentIds: Array.from(nextSet) }
     })
     get().sceneManager?.setSelection(get().selectedComponentIds)
+  },
+
+  setFolderBuildStage: (folderId, isStage) => {
+    set((s) => {
+      const folder = s.folders[folderId]
+      if (!folder) return {}
+      if (isStage) {
+        if (folder.buildStageOrder !== undefined) return {} // already a stage
+        const existingOrders = getBuildStageFolders(s.folders).map((f) => f.buildStageOrder!)
+        const nextOrder = existingOrders.length > 0 ? Math.max(...existingOrders) + 1 : 1
+        return { folders: { ...s.folders, [folderId]: { ...folder, buildStageOrder: nextOrder } } }
+      }
+      if (folder.buildStageOrder === undefined) return {}
+      const unmarked: TreeFolder = { id: folder.id, name: folder.name, parentId: folder.parentId }
+      return { folders: { ...s.folders, [folderId]: unmarked } }
+    })
+  },
+
+  moveBuildStageOrder: (folderId, direction) => {
+    set((s) => {
+      const stages = getBuildStageFolders(s.folders)
+      const idx = stages.findIndex((f) => f.id === folderId)
+      if (idx === -1) return {}
+      const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+      if (swapIdx < 0 || swapIdx >= stages.length) return {}
+      const a = stages[idx]
+      const b = stages[swapIdx]
+      return {
+        folders: {
+          ...s.folders,
+          [a.id]: { ...a, buildStageOrder: b.buildStageOrder },
+          [b.id]: { ...b, buildStageOrder: a.buildStageOrder },
+        },
+      }
+    })
+  },
+
+  isolateFolder: (folderId) => {
+    get().selectFolderContents(folderId, false)
+    get().isolateSelected()
   },
 
   assignMaterialToComponents: async (materialId, componentIds) => {
@@ -562,10 +714,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setProductInfo: (componentId, info) => {
+    get().setProductInfoForComponents([componentId], info)
+  },
+
+  setProductInfoForComponents: (componentIds, info) => {
+    if (componentIds.length === 0) return
     set((s) => {
       const next = { ...s.productInfo }
-      if (isProductInfoEmpty(info)) delete next[componentId]
-      else next[componentId] = info
+      for (const componentId of componentIds) {
+        if (isProductInfoEmpty(info)) delete next[componentId]
+        else next[componentId] = info
+      }
       return { productInfo: next }
     })
     get().reapplyProductInfo()

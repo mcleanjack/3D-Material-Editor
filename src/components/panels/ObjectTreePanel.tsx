@@ -1,12 +1,26 @@
-import { useMemo, useState } from 'react'
-import { useAppStore, collectFolderComponentIds } from '../../store/useAppStore'
+import { useEffect, useRef, useMemo, useState } from 'react'
+import { useAppStore } from '../../store/useAppStore'
 import type { ObjectTreeNode } from '../../types/tree'
 import type { TreeFolder } from '../../types/folder'
-import { EMPTY_PRODUCT_INFO, looksLikeEmail, looksLikeUrl, type ProductInfo } from '../../types/product'
+import { collectFolderComponentIds, getBuildStageFolders } from '../../types/folder'
+import {
+  EMPTY_PRODUCT_INFO,
+  LINKED_DETAIL_WARN_BYTES,
+  looksLikeEmail,
+  looksLikeUrl,
+  type LinkedDetailRef,
+  type ProductInfo,
+} from '../../types/product'
+import { storeAssetFile, getAssetUrl } from '../../db/assetCache'
+import { formatBytes } from '../../utils/format'
 import { Icon } from '../common/Icon'
 import { PanelShell } from './PanelShell'
 import { MaterialPicker } from './MaterialPicker'
 import { PromptDialog } from '../common/PromptDialog'
+
+function isPdfFile(file: File): boolean {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+}
 
 /** Drag payload carried in the HTML5 DnD `application/json` slot. */
 type DragPayload = { kind: 'components'; ids: string[] } | { kind: 'folder'; id: string }
@@ -22,6 +36,15 @@ function readDragPayload(e: React.DragEvent): DragPayload | null {
   } catch {
     return null
   }
+}
+
+/** Which half of `e.currentTarget` the pointer is over — top half means "insert before this
+ * row", bottom half means "insert after". Computed fresh from the event each time it's needed
+ * (both on dragover, for the visual indicator, and again on drop, for the actual move) rather
+ * than trusted from state alone. */
+function dragEdgeFromEvent(e: React.DragEvent): 'top' | 'bottom' {
+  const rect = e.currentTarget.getBoundingClientRect()
+  return e.clientY - rect.top < rect.height / 2 ? 'top' : 'bottom'
 }
 
 function useNodeMap(root: ObjectTreeNode | null): Map<string, ObjectTreeNode> {
@@ -62,16 +85,90 @@ function folderMatchesSearch(
   return false
 }
 
-function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; query: string }) {
+/** Appends `node`'s own componentId, then recurses into its visible children (those not pulled
+ * into a folder), in the exact order TreeRow renders them — a depth-first, top-to-bottom walk. */
+function flattenNodeOrder(node: ObjectTreeNode, folderMembership: Record<string, string>, out: string[]) {
+  out.push(node.componentId)
+  for (const child of node.children) {
+    if (folderMembership[child.componentId]) continue
+    flattenNodeOrder(child, folderMembership, out)
+  }
+}
+
+/** Same idea as flattenNodeOrder but for a folder's own contents, in the exact order FolderRow
+ * renders them: its child folders (recursively), then its direct member objects. */
+function flattenFolderOrder(
+  folderId: string,
+  folders: Record<string, TreeFolder>,
+  folderMembership: Record<string, string>,
+  nodeMap: Map<string, ObjectTreeNode>,
+  out: string[],
+) {
+  for (const f of Object.values(folders)) {
+    if (f.parentId === folderId) flattenFolderOrder(f.id, folders, folderMembership, nodeMap, out)
+  }
+  for (const [componentId, fid] of Object.entries(folderMembership)) {
+    if (fid !== folderId) continue
+    const node = nodeMap.get(componentId)
+    if (node) flattenNodeOrder(node, folderMembership, out)
+  }
+}
+
+/** Every object row's componentId, top-to-bottom in the same order the Object Tree currently
+ * renders them (root folders and their contents, then the ungrouped tree) — resolves a
+ * shift-click range select. Assumes every row is expanded, matching each row's default state; a
+ * manually collapsed branch only approximates here, same as it would be ambiguous for any
+ * range-select UI to guess whether a collapsed branch's contents should be included. */
+function computeVisibleOrder(
+  objectTree: ObjectTreeNode | null,
+  folders: Record<string, TreeFolder>,
+  folderMembership: Record<string, string>,
+  nodeMap: Map<string, ObjectTreeNode>,
+): string[] {
+  const out: string[] = []
+  for (const f of Object.values(folders)) {
+    if (f.parentId === null) flattenFolderOrder(f.id, folders, folderMembership, nodeMap, out)
+  }
+  if (objectTree) flattenNodeOrder(objectTree, folderMembership, out)
+  return out
+}
+
+/**
+ * `folderId`/`nextSiblingComponentId` are only passed when this row is a folder's direct member
+ * (from FolderRow's own memberNodes.map) — that's what enables the drag-to-reorder drop target
+ * below; a row rendered as a plain hierarchy child (via visibleChildren, including a member
+ * node's own descendants) doesn't receive them and so isn't reorderable, since only a folder's
+ * direct members have a meaningful position to drag into.
+ */
+function TreeRow({
+  node,
+  depth,
+  query,
+  folderId,
+  nextSiblingComponentId,
+}: {
+  node: ObjectTreeNode
+  depth: number
+  query: string
+  folderId?: string
+  nextSiblingComponentId?: string | null
+}) {
   const [expanded, setExpanded] = useState(true)
+  const [dropEdge, setDropEdge] = useState<'top' | 'bottom' | null>(null)
+  const objectTree = useAppStore((s) => s.objectTree)
+  const folders = useAppStore((s) => s.folders)
   const selectedComponentIds = useAppStore((s) => s.selectedComponentIds)
+  const lastSelectedComponentId = useAppStore((s) => s.lastSelectedComponentId)
   const hoveredComponentId = useAppStore((s) => s.hoveredComponentId)
   const hiddenComponentIds = useAppStore((s) => s.hiddenComponentIds)
   const folderMembership = useAppStore((s) => s.folderMembership)
   const hasProductInfo = useAppStore((s) => !!s.productInfo[node.componentId])
   const selectComponent = useAppStore((s) => s.selectComponent)
+  const selectComponentRange = useAppStore((s) => s.selectComponentRange)
+  const reorderComponentsInFolder = useAppStore((s) => s.reorderComponentsInFolder)
   const setHover = useAppStore((s) => s.setHover)
   const toggleVisibility = useAppStore((s) => s.toggleVisibility)
+  const nodeMap = useNodeMap(objectTree)
 
   if (query && !nodeMatchesSearch(node, query)) return null
 
@@ -98,13 +195,48 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
           e.dataTransfer.setData('application/json', JSON.stringify({ kind: 'components', ids } satisfies DragPayload))
           e.dataTransfer.effectAllowed = 'move'
         }}
-        className={`flex items-center gap-1 rounded px-1 py-0.5 text-xs cursor-pointer ${
+        onDragOver={(e) => {
+          if (!folderId) return
+          e.preventDefault()
+          e.stopPropagation()
+          setDropEdge(dragEdgeFromEvent(e))
+        }}
+        onDragLeave={() => setDropEdge(null)}
+        onDrop={(e) => {
+          if (!folderId) return
+          e.preventDefault()
+          e.stopPropagation()
+          // Computed fresh from the drop event itself, not read back from dropEdge state — that
+          // state is only for the visual indicator and can still reflect the previous dragover by
+          // the time this handler runs (a drop right on the heels of the last dragover can beat a
+          // React re-render), which would silently use a stale edge for the actual move.
+          const edge = dragEdgeFromEvent(e)
+          setDropEdge(null)
+          const payload = readDragPayload(e)
+          if (!payload || payload.kind !== 'components') return
+          const beforeComponentId = edge === 'top' ? node.componentId : (nextSiblingComponentId ?? null)
+          reorderComponentsInFolder(payload.ids, folderId, beforeComponentId)
+        }}
+        className={`relative flex items-center gap-1 rounded px-1 py-0.5 text-xs cursor-pointer ${
           selected ? 'bg-blue-600/30 text-[var(--text)]' : hovered ? 'bg-white/5' : 'text-[var(--text-dim)]'
         }`}
         style={{ paddingLeft: depth * 14 + 4 }}
         onMouseEnter={() => setHover(node.componentId)}
         onMouseLeave={() => setHover(null)}
-        onClick={(e) => selectComponent(node.componentId, e.shiftKey || e.metaKey || e.ctrlKey)}
+        title="Click to select. Shift-click to select the range from the last selected object. Ctrl/Cmd-click to add or remove one."
+        onClick={(e) => {
+          if (e.shiftKey && lastSelectedComponentId) {
+            const order = computeVisibleOrder(objectTree, folders, folderMembership, nodeMap)
+            const anchorIndex = order.indexOf(lastSelectedComponentId)
+            const targetIndex = order.indexOf(node.componentId)
+            if (anchorIndex !== -1 && targetIndex !== -1) {
+              const [lo, hi] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
+              selectComponentRange(order.slice(lo, hi + 1))
+              return
+            }
+          }
+          selectComponent(node.componentId, e.metaKey || e.ctrlKey)
+        }}
       >
         <button
           className="flex h-4 w-4 shrink-0 items-center justify-center"
@@ -132,6 +264,11 @@ function TreeRow({ node, depth, query }: { node: ObjectTreeNode; depth: number; 
         >
           <Icon name={hidden ? 'eyeOff' : 'eye'} size={12} />
         </button>
+        {dropEdge && (
+          <div
+            className={`pointer-events-none absolute inset-x-0 h-0.5 rounded bg-blue-400 ${dropEdge === 'top' ? '-top-px' : '-bottom-px'}`}
+          />
+        )}
       </div>
       {isExpanded && hasChildren && (
         <div>
@@ -160,6 +297,7 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
   const deleteFolder = useAppStore((s) => s.deleteFolder)
   const moveComponentsToFolder = useAppStore((s) => s.moveComponentsToFolder)
   const moveFolderToFolder = useAppStore((s) => s.moveFolderToFolder)
+  const setFolderBuildStage = useAppStore((s) => s.setFolderBuildStage)
 
   const nodeMap = useNodeMap(objectTree)
 
@@ -176,6 +314,7 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
   const allComponentIds = collectFolderComponentIds(folders, folderMembership, folder.id)
   const hidden = allComponentIds.length > 0 && allComponentIds.every((id) => hiddenComponentIds.has(id))
   const selected = allComponentIds.length > 0 && allComponentIds.every((id) => selectedComponentIds.includes(id))
+  const isBuildStage = folder.buildStageOrder !== undefined
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
@@ -221,6 +360,24 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
         </button>
         <Icon name="folder" size={12} className="shrink-0 text-amber-400" />
         <span className="flex-1 truncate font-medium text-[var(--text)]">{folder.name}</span>
+        {isBuildStage && (
+          <span
+            title={`Build stage ${folder.buildStageOrder}`}
+            className="shrink-0 rounded bg-emerald-600/30 px-1 py-0.5 text-[9px] font-semibold text-emerald-300"
+          >
+            Stage {folder.buildStageOrder}
+          </span>
+        )}
+        <button
+          title={isBuildStage ? 'Unmark as build stage' : 'Mark as build stage'}
+          className={`shrink-0 rounded p-0.5 opacity-60 hover:opacity-100 ${isBuildStage ? 'text-emerald-400 opacity-100' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            setFolderBuildStage(folder.id, !isBuildStage)
+          }}
+        >
+          <Icon name="flag" size={11} />
+        </button>
         <button
           title="Rename folder"
           className="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100"
@@ -256,8 +413,15 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
           {childFolders.map((f) => (
             <FolderRow key={f.id} folder={f} depth={depth + 1} query={query} />
           ))}
-          {memberNodes.map((n) => (
-            <TreeRow key={n.componentId} node={n} depth={depth + 1} query={query} />
+          {memberNodes.map((n, i) => (
+            <TreeRow
+              key={n.componentId}
+              node={n}
+              depth={depth + 1}
+              query={query}
+              folderId={folder.id}
+              nextSiblingComponentId={memberNodes[i + 1]?.componentId ?? null}
+            />
           ))}
         </div>
       )}
@@ -347,17 +511,198 @@ function ProductInfoField({ label, children }: { label: string; children: React.
   )
 }
 
-/** Keyed by componentId from ProductInfoSection so switching the selected object remounts this
- * with fresh draft state — simpler and less error-prone than a useEffect re-sync. Edits are
- * local (draft) until Save is clicked, matching how material edits require an explicit save. */
-function ProductInfoFields({ componentId }: { componentId: string }) {
+/** Upload-on-select, same as MaterialEditorPanel's TextureSlot: picking a file immediately stores
+ * it as a blob asset in IndexedDB and puts just the {assetId, fileName, fileSize, mimeType} ref
+ * into the draft — the componentId -> ProductInfo association (and so the PDF actually being
+ * "attached" to an object) only becomes real when Save is clicked, same as every other field
+ * here. */
+function LinkedDetailField({ value, onChange }: { value: LinkedDetailRef | null; onChange: (v: LinkedDetailRef | null) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleFile(file: File) {
+    setError(null)
+    if (!isPdfFile(file)) {
+      setError('Only PDF files are supported.')
+      return
+    }
+    setUploading(true)
+    try {
+      const assetId = await storeAssetFile(file)
+      onChange({ assetId, fileName: file.name, fileSize: file.size, mimeType: file.type || 'application/pdf' })
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function handleOpen() {
+    if (!value) return
+    const url = await getAssetUrl(value.assetId)
+    window.open(url, '_blank', 'noopener')
+  }
+
+  return (
+    <ProductInfoField label="Linked Detail">
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) void handleFile(file)
+          e.target.value = ''
+        }}
+      />
+      {value ? (
+        <div className="flex items-center gap-2 rounded border border-dashed border-[var(--panel-border)] p-2">
+          <Icon name="document" size={16} className="shrink-0 text-[var(--text-faint)]" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[11px] text-[var(--text)]" title={value.fileName}>
+              {value.fileName}
+            </div>
+            <div className="text-[10px] text-[var(--text-faint)]">{formatBytes(value.fileSize)}</div>
+          </div>
+          <div className="flex shrink-0 gap-1.5">
+            <button className="rounded bg-[#33353d] px-2 py-0.5 text-[10px] text-[var(--text)] hover:bg-[#3d3f48]" onClick={() => void handleOpen()}>
+              Open
+            </button>
+            <button
+              className="rounded bg-[#33353d] px-2 py-0.5 text-[10px] text-[var(--text)] hover:bg-[#3d3f48]"
+              onClick={() => inputRef.current?.click()}
+            >
+              Replace
+            </button>
+            <button className="rounded bg-[#33353d] px-2 py-0.5 text-[10px] text-red-400 hover:bg-[#3d3f48]" onClick={() => onChange(null)}>
+              Remove
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          className="flex items-center gap-1.5 rounded bg-[#2a2c33] px-2 py-1.5 text-[11px] text-[var(--text)] hover:bg-[#33353d] disabled:opacity-50"
+          disabled={uploading}
+          onClick={() => inputRef.current?.click()}
+        >
+          <Icon name="document" size={12} />
+          {uploading ? 'Uploading…' : 'Import Linked Detail'}
+        </button>
+      )}
+      {value && value.fileSize > LINKED_DETAIL_WARN_BYTES && (
+        <p className="mt-0.5 text-[10px] text-amber-400">
+          This PDF is {formatBytes(value.fileSize)} — large linked details increase the exported GLB's size noticeably.
+        </p>
+      )}
+      {error && <p className="mt-0.5 text-[10px] text-red-400">{error}</p>}
+    </ProductInfoField>
+  )
+}
+
+interface ProductInfoOption {
+  componentId: string
+  name: string
+  info: ProductInfo
+}
+
+/** A type-to-filter dropdown listing every object that already has Product Information saved,
+ * so a repeated product (the same material spec sheet, supplier contact, etc. used on several
+ * objects) can be copied in instead of retyped. Picking an option loads its stored fields into
+ * the current draft — same as typing them by hand, still requires Save to actually persist. */
+function ProductInfoTemplatePicker({ excludeComponentIds, onPick }: { excludeComponentIds: string[]; onPick: (info: ProductInfo) => void }) {
+  const productInfo = useAppStore((s) => s.productInfo)
   const objectMeta = useAppStore((s) => s.objectMeta)
-  const storedInfo = useAppStore((s) => s.productInfo[componentId])
-  const setProductInfo = useAppStore((s) => s.setProductInfo)
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const excludeSet = useMemo(() => new Set(excludeComponentIds), [excludeComponentIds])
+
+  const options = useMemo<ProductInfoOption[]>(() => {
+    const q = query.trim().toLowerCase()
+    return Object.entries(productInfo)
+      .filter(([componentId]) => !excludeSet.has(componentId))
+      .map(([componentId, info]) => ({ componentId, name: objectMeta.get(componentId)?.name ?? componentId, info }))
+      .filter((o) => !q || o.name.toLowerCase().includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [productInfo, objectMeta, excludeSet, query])
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [])
+
+  if (Object.keys(productInfo).length === 0) return null
+
+  return (
+    <div ref={containerRef} className="relative mb-1.5">
+      <div className="flex items-center gap-1.5 rounded border border-[var(--panel-border)] bg-[#2a2c33] px-2 py-1">
+        <Icon name="search" size={12} className="shrink-0 text-[var(--text-faint)]" />
+        <input
+          className="w-full bg-transparent text-xs text-[var(--text)] outline-none placeholder:text-[var(--text-faint)]"
+          placeholder="Copy from another object…"
+          value={query}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => {
+            setQuery(e.target.value)
+            setOpen(true)
+          }}
+        />
+      </div>
+      {open && (
+        <div
+          className="absolute inset-x-0 top-full z-10 mt-1 max-h-40 overflow-y-auto rounded border shadow-lg"
+          style={{ borderColor: 'var(--panel-border)', backgroundColor: '#2a2c33' }}
+        >
+          {options.length === 0 ? (
+            <div className="px-2 py-1.5 text-[11px] text-[var(--text-faint)]">No matching objects</div>
+          ) : (
+            options.map((o) => (
+              <button
+                key={o.componentId}
+                type="button"
+                className="block w-full truncate px-2 py-1.5 text-left text-[11px] text-[var(--text)] hover:bg-[#33353d]"
+                title={o.name}
+                onClick={() => {
+                  onPick(o.info)
+                  setQuery('')
+                  setOpen(false)
+                }}
+              >
+                {o.name}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Keyed by the (sorted) selected componentId set from ProductInfoSection so switching the
+ * selection — a different single object, or a different multi-select — remounts this with fresh
+ * draft state, simpler and less error-prone than a useEffect re-sync. Edits are local (draft)
+ * until Save is clicked, matching how material edits require an explicit save.
+ *
+ * With one object selected, the draft is pre-filled from its stored info and Save updates just
+ * that object. With multiple selected, the draft always starts blank (their existing info may
+ * differ, so there's no single value to show) and Save applies the same values to every selected
+ * object at once — the same "type once, apply to N" pattern already used for material
+ * assignment. */
+function ProductInfoFields({ componentIds }: { componentIds: string[] }) {
+  const objectMeta = useAppStore((s) => s.objectMeta)
+  const storedInfo = useAppStore((s) => (componentIds.length === 1 ? s.productInfo[componentIds[0]] : undefined))
+  const setProductInfoForComponents = useAppStore((s) => s.setProductInfoForComponents)
+  const renameComponent = useAppStore((s) => s.renameComponent)
   const [draft, setDraft] = useState<ProductInfo>(() => storedInfo ?? EMPTY_PRODUCT_INFO)
   const [justSaved, setJustSaved] = useState(false)
+  const [renaming, setRenaming] = useState(false)
 
-  const objectName = objectMeta.get(componentId)?.name ?? componentId
+  const isMulti = componentIds.length > 1
+  const objectName = componentIds.length === 1 ? objectMeta.get(componentIds[0])?.name ?? componentIds[0] : null
 
   function update<K extends keyof ProductInfo>(key: K, value: ProductInfo[K]) {
     setDraft((d) => ({ ...d, [key]: value }))
@@ -366,7 +711,33 @@ function ProductInfoFields({ componentId }: { componentId: string }) {
 
   return (
     <div className="border-t px-3 py-2.5" style={{ borderColor: 'var(--panel-border)' }}>
-      <div className="mb-1.5 text-[11px] font-medium text-[var(--text)]">Product Information — &quot;{objectName}&quot;</div>
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-[var(--text)]">
+        <span className="min-w-0 flex-1 truncate">
+          {isMulti ? `Product Information — ${componentIds.length} selected objects` : `Product Information — "${objectName}"`}
+        </span>
+        {!isMulti && (
+          <button
+            title="Rename object"
+            className="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100"
+            onClick={() => setRenaming(true)}
+          >
+            <Icon name="edit" size={11} />
+          </button>
+        )}
+      </div>
+      {isMulti && (
+        <p className="mb-1.5 text-[10px] leading-relaxed text-[var(--text-faint)]">
+          Applies the same values to all {componentIds.length} selected objects, replacing any product
+          information already on them individually.
+        </p>
+      )}
+      <ProductInfoTemplatePicker
+        excludeComponentIds={componentIds}
+        onPick={(info) => {
+          setDraft(info)
+          setJustSaved(false)
+        }}
+      />
       <div className="space-y-2">
         <ProductInfoField label="Description">
           <textarea
@@ -397,6 +768,7 @@ function ProductInfoFields({ componentId }: { componentId: string }) {
             <p className="mt-0.5 text-[10px] text-amber-400">Doesn&apos;t look like a full URL (missing http(s)://)</p>
           )}
         </ProductInfoField>
+        <LinkedDetailField value={draft.linkedDetail} onChange={(v) => update('linkedDetail', v)} />
 
         <div className="border-t pt-2" style={{ borderColor: 'var(--panel-border)' }}>
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-faint)]">
@@ -429,22 +801,35 @@ function ProductInfoFields({ componentId }: { componentId: string }) {
         <button
           className="rounded bg-blue-600 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-blue-500"
           onClick={() => {
-            setProductInfo(componentId, draft)
+            setProductInfoForComponents(componentIds, draft)
             setJustSaved(true)
           }}
         >
-          Save Product Information
+          {isMulti ? `Apply to ${componentIds.length} Objects` : 'Save Product Information'}
         </button>
         {justSaved && <span className="text-[10px] text-emerald-400">Saved</span>}
       </div>
+      {renaming && objectName !== null && (
+        <PromptDialog
+          title="Rename Object"
+          initialValue={objectName}
+          confirmLabel="RENAME"
+          onCancel={() => setRenaming(false)}
+          onConfirm={(name) => {
+            renameComponent(componentIds[0], name)
+            setRenaming(false)
+          }}
+        />
+      )}
     </div>
   )
 }
 
 function ProductInfoSection() {
   const selectedComponentIds = useAppStore((s) => s.selectedComponentIds)
-  if (selectedComponentIds.length !== 1) return null
-  return <ProductInfoFields key={selectedComponentIds[0]} componentId={selectedComponentIds[0]} />
+  if (selectedComponentIds.length === 0) return null
+  const key = [...selectedComponentIds].sort().join('|')
+  return <ProductInfoFields key={key} componentIds={selectedComponentIds} />
 }
 
 function FaceSelectionAssignment() {
@@ -537,6 +922,96 @@ function FbxMaterialsSection() {
   )
 }
 
+/** Lists every build-stage folder in order, with up/down reorder controls, and a simple
+ * prev/next stepper that isolates each stage in turn by reusing the existing isolate path
+ * (isolateFolder -> selectFolderContents + isolateSelected) — no separate visibility system. */
+function BuildStagesSection() {
+  const folders = useAppStore((s) => s.folders)
+  const isolateFolder = useAppStore((s) => s.isolateFolder)
+  const exitIsolate = useAppStore((s) => s.exitIsolate)
+  const moveBuildStageOrder = useAppStore((s) => s.moveBuildStageOrder)
+  const [activeIndex, setActiveIndex] = useState<number | null>(null)
+
+  const stages = getBuildStageFolders(folders)
+  if (stages.length === 0) return null
+
+  // Defensive: stages can be reordered/deleted out from under a stale index (e.g. mid-preview).
+  const safeIndex = activeIndex !== null && activeIndex < stages.length ? activeIndex : null
+
+  function goTo(index: number) {
+    const clamped = Math.max(0, Math.min(stages.length - 1, index))
+    setActiveIndex(clamped)
+    isolateFolder(stages[clamped].id)
+  }
+
+  return (
+    <div className="border-t px-3 py-2" style={{ borderColor: 'var(--panel-border)' }}>
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-[11px] font-medium text-[var(--text)]">Build Stages ({stages.length})</span>
+        {safeIndex !== null && (
+          <button
+            className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)]"
+            onClick={() => {
+              setActiveIndex(null)
+              exitIsolate()
+            }}
+          >
+            Exit preview
+          </button>
+        )}
+      </div>
+
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <button
+          className="shrink-0 rounded bg-[#2a2c33] p-1 disabled:opacity-30"
+          disabled={safeIndex !== null && safeIndex <= 0}
+          onClick={() => goTo((safeIndex ?? 0) - 1)}
+        >
+          <Icon name="chevronRight" size={12} className="rotate-180" />
+        </button>
+        <span className="flex-1 truncate text-center text-[11px] text-[var(--text-dim)]">
+          {safeIndex === null ? 'Preview steps through stages in order' : `Stage ${safeIndex + 1} of ${stages.length}: ${stages[safeIndex].name}`}
+        </span>
+        <button
+          className="shrink-0 rounded bg-[#2a2c33] p-1 disabled:opacity-30"
+          disabled={safeIndex !== null && safeIndex >= stages.length - 1}
+          onClick={() => goTo((safeIndex ?? -1) + 1)}
+        >
+          <Icon name="chevronRight" size={12} />
+        </button>
+      </div>
+
+      <div className="space-y-1">
+        {stages.map((stage, i) => (
+          <div
+            key={stage.id}
+            className={`flex items-center gap-1.5 rounded px-1.5 py-1 text-[11px] ${safeIndex === i ? 'bg-blue-600/20' : ''}`}
+          >
+            <span className="w-4 shrink-0 text-center text-[var(--text-faint)]">{stage.buildStageOrder}</span>
+            <span className="flex-1 truncate text-[var(--text)]">{stage.name}</span>
+            <button
+              title="Move earlier"
+              className="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100 disabled:opacity-20"
+              disabled={i === 0}
+              onClick={() => moveBuildStageOrder(stage.id, 'up')}
+            >
+              <Icon name="chevronRight" size={10} className="-rotate-90" />
+            </button>
+            <button
+              title="Move later"
+              className="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100 disabled:opacity-20"
+              disabled={i === stages.length - 1}
+              onClick={() => moveBuildStageOrder(stage.id, 'down')}
+            >
+              <Icon name="chevronRight" size={10} className="rotate-90" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function ObjectTreePanel() {
   const objectTree = useAppStore((s) => s.objectTree)
   const fbxFileName = useAppStore((s) => s.fbxFileName)
@@ -588,6 +1063,7 @@ export function ObjectTreePanel() {
             ))}
             <TreeRow node={objectTree} depth={0} query={query} />
           </div>
+          <BuildStagesSection />
           <SelectionAssignment />
           <ProductInfoSection />
           <FaceSelectionAssignment />

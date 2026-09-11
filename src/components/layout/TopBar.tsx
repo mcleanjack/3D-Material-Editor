@@ -2,17 +2,33 @@ import { useRef, useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { useProjectStore } from '../../store/useProjectStore'
 import { exportGlb, downloadBlob } from '../../three/exportGlb'
+import { optimizeGlb, type OptimizeStage } from '../../three/glbOptimize'
 import { validateGlb, type GlbValidationReport } from '../../three/reimportValidate'
 import { downloadProductInfoCsv } from '../../utils/exportProductInfo'
+import { exportProjectToFile, importProjectFromFile } from '../../utils/projectFile'
 import { Icon } from '../common/Icon'
 import { Button } from '../common/Button'
-import { ExportReportModal } from '../common/ExportReportModal'
+import { ExportReportModal, type OptimizeSizeInfo } from '../common/ExportReportModal'
+import { OpenProjectModal } from '../common/OpenProjectModal'
+
+const OPTIMIZE_STAGE_LABELS: Record<OptimizeStage, string> = {
+  reading: 'READING…',
+  dedup: 'DEDUPLICATING…',
+  weld: 'WELDING VERTICES…',
+  prune: 'PRUNING UNUSED DATA…',
+  'geometry-compress': 'COMPRESSING GEOMETRY…',
+  'texture-compress': 'COMPRESSING TEXTURES…',
+  writing: 'WRITING FILE…',
+}
 
 export function TopBar() {
   const fbxInputRef = useRef<HTMLInputElement>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
-  const [report, setReport] = useState<{ report: GlbValidationReport; fileName: string } | null>(null)
+  const [optimizeExport, setOptimizeExport] = useState(false)
+  const [optimizeStage, setOptimizeStage] = useState<OptimizeStage | null>(null)
+  const [report, setReport] = useState<{ report: GlbValidationReport; fileName: string; sizeInfo?: OptimizeSizeInfo } | null>(null)
+  const [showOpenProject, setShowOpenProject] = useState(false)
 
   const importFbxFile = useAppStore((s) => s.importFbxFile)
   const importing = useAppStore((s) => s.importing)
@@ -23,6 +39,8 @@ export function TopBar() {
   const exportSettings = useAppStore((s) => s.exportSettings)
   const productInfo = useAppStore((s) => s.productInfo)
   const objectMeta = useAppStore((s) => s.objectMeta)
+  const folders = useAppStore((s) => s.folders)
+  const folderMembership = useAppStore((s) => s.folderMembership)
   const setStatusMessage = useAppStore((s) => s.setStatusMessage)
 
   const projectName = useProjectStore((s) => s.currentProjectName)
@@ -42,27 +60,58 @@ export function TopBar() {
     setStatusMessage(`Exported product information for ${Object.keys(productInfo).length} object(s).`)
   }
 
+  async function handleSaveToFile() {
+    setStatusMessage('Saving project to file…')
+    try {
+      await exportProjectToFile()
+      setStatusMessage('Project saved to file.')
+    } catch (err) {
+      setStatusMessage(`Failed to save project file: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  async function handleOpenFromFile() {
+    setStatusMessage('Opening project file…')
+    await importProjectFromFile()
+  }
+
   async function handleExport() {
     if (!modelRoot || !sceneManager) return
     setExporting(true)
+    setOptimizeStage(null)
     setStatusMessage('Exporting GLB…')
     try {
       const baseName = (fbxFileName ?? 'model').replace(/\.fbx$/i, '')
-      const blob = await exportGlb({
+      let blob = await exportGlb({
         modelGroup: sceneManager.modelGroup,
         exportSettings,
         edgeSettings,
+        folders,
+        folderMembership,
       })
+
+      let sizeInfo: OptimizeSizeInfo | undefined
+      if (optimizeExport) {
+        const result = await optimizeGlb(blob, {
+          compressTextures: exportSettings.includeTextures,
+          onProgress: setOptimizeStage,
+        })
+        blob = result.blob
+        sizeInfo = { originalBytes: result.originalByteLength, optimizedBytes: result.optimizedByteLength }
+        setOptimizeStage(null)
+      }
+
       downloadBlob(blob, `${baseName}.glb`)
 
       setStatusMessage('Validating exported GLB…')
-      const validation = await validateGlb(blob)
-      setReport({ report: validation, fileName: `${baseName}.glb` })
+      const validation = await validateGlb(blob, sceneManager.renderer)
+      setReport({ report: validation, fileName: `${baseName}.glb`, sizeInfo })
       setStatusMessage(`Exported ${baseName}.glb — ${validation.meshCount} meshes, ${validation.materialCount} materials.`)
     } catch (err) {
       setStatusMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setExporting(false)
+      setOptimizeStage(null)
     }
   }
 
@@ -83,22 +132,65 @@ export function TopBar() {
           <>
             <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
             <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)] py-1 shadow-xl">
-              <MenuItem icon="import" label="Import FBX…" onClick={() => fbxInputRef.current?.click()} />
+              <MenuItem
+                icon="import"
+                label="Import FBX…"
+                onClick={() => {
+                  fbxInputRef.current?.click()
+                  setMenuOpen(false)
+                }}
+              />
               <MenuItem
                 icon="export"
                 label="Export GLB…"
                 disabled={!modelRoot}
-                onClick={() => void handleExport()}
+                onClick={() => {
+                  void handleExport()
+                  setMenuOpen(false)
+                }}
               />
               <MenuItem
                 icon="export"
                 label="Export Product Information (CSV)…"
                 disabled={Object.keys(productInfo).length === 0}
-                onClick={handleExportProductInfo}
+                onClick={() => {
+                  handleExportProductInfo()
+                  setMenuOpen(false)
+                }}
               />
               <div className="my-1 h-px bg-[var(--panel-border)]" />
-              <MenuItem icon="save" label="Save Project" onClick={() => void saveCurrentAsProject()} />
-              <MenuItem icon="folder" label="Open Project…" onClick={() => useAppStore.getState().setActiveRightPanel('objectTree')} />
+              <MenuItem
+                icon="save"
+                label="Save Project"
+                onClick={() => {
+                  void saveCurrentAsProject()
+                  setMenuOpen(false)
+                }}
+              />
+              <MenuItem
+                icon="folder"
+                label="Open Project…"
+                onClick={() => {
+                  setShowOpenProject(true)
+                  setMenuOpen(false)
+                }}
+              />
+              <MenuItem
+                icon="save"
+                label="Save to File…"
+                onClick={() => {
+                  void handleSaveToFile()
+                  setMenuOpen(false)
+                }}
+              />
+              <MenuItem
+                icon="folder"
+                label="Open from File…"
+                onClick={() => {
+                  void handleOpenFromFile()
+                  setMenuOpen(false)
+                }}
+              />
             </div>
           </>
         )}
@@ -135,16 +227,33 @@ export function TopBar() {
       >
         {importing ? 'IMPORTING…' : 'IMPORT FBX'}
       </Button>
+      <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-dim)]">
+        <input
+          type="checkbox"
+          checked={optimizeExport}
+          onChange={(e) => setOptimizeExport(e.target.checked)}
+          disabled={exporting}
+        />
+        Optimize export
+      </label>
       <Button
         variant="primary"
         icon={<Icon name="export" size={14} />}
         onClick={() => void handleExport()}
         disabled={!modelRoot || exporting}
       >
-        {exporting ? 'EXPORTING…' : 'EXPORT GLB'}
+        {optimizeStage ? OPTIMIZE_STAGE_LABELS[optimizeStage] : exporting ? 'EXPORTING…' : 'EXPORT GLB'}
       </Button>
 
-      {report && <ExportReportModal report={report.report} fileName={report.fileName} onClose={() => setReport(null)} />}
+      {report && (
+        <ExportReportModal
+          report={report.report}
+          fileName={report.fileName}
+          sizeInfo={report.sizeInfo}
+          onClose={() => setReport(null)}
+        />
+      )}
+      {showOpenProject && <OpenProjectModal onClose={() => setShowOpenProject(false)} />}
     </div>
   )
 }

@@ -3,7 +3,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useMaterialLibraryStore } from '../../store/useMaterialLibraryStore'
 import { createBlankMaterial, type CustomMaterial, type BumpMapType } from '../../types/material'
 import { makeId } from '../../utils/id'
-import { storeTextureFile, readImageDimensions, getAssetUrl } from '../../db/assetCache'
+import { storeAssetFile, readImageDimensions, getAssetUrl } from '../../db/assetCache'
 import { Icon } from '../common/Icon'
 import { Button } from '../common/Button'
 import { PanelShell } from './PanelShell'
@@ -130,7 +130,7 @@ export function MaterialEditorPanel() {
 
   async function handleUpload(key: 'diffuseMap' | 'bumpNormalMap' | 'roughnessMap' | 'metalnessMap' | 'aoMap' | 'emissiveMap', file: File) {
     const dims = await readImageDimensions(file)
-    const assetId = await storeTextureFile(file)
+    const assetId = await storeAssetFile(file)
     update(key, { assetId, fileName: file.name, width: dims.width, height: dims.height })
     if (key === 'diffuseMap' && draft.physicalWidthMm === 1000 && draft.physicalHeightMm === 1000) {
       // Default the physical size to the pixel dimensions on first upload so repeat starts

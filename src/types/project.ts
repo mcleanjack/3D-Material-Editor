@@ -3,8 +3,13 @@ import type { TreeFolder } from './folder'
 import type { SunSettings } from './sun'
 import type { ProductInfo } from './product'
 
-/** A saved authoring session. The source FBX itself is NOT re-embedded here — only a
- * reference/name — because it can be large; the user re-imports the same FBX to resume. */
+/** A saved authoring session. The in-browser "Save Project"/"Open Project" list keys resume on
+ * `sourceFbxName` alone — the user re-imports the same-named FBX and assignments reapply to it
+ * (see useProjectStore.loadProject). `sourceFbxAssetId` exists only so the *file-based* "Save to
+ * File" export (src/utils/projectFile.ts) can also bundle the FBX's actual bytes, making that
+ * export genuinely self-contained; it points at the blob asset cached when the FBX was imported
+ * (see useAppStore.importFbxFile) and is optional both for backward compatibility with projects
+ * saved before this existed and because no FBX may be loaded yet when a project is saved. */
 export interface AuthoringProject {
   id: string
   name: string
@@ -12,6 +17,7 @@ export interface AuthoringProject {
   updatedAt: number
 
   sourceFbxName: string
+  sourceFbxAssetId?: string
 
   /** componentId -> assigned custom material id */
   materialAssignments: Record<string, string>
@@ -19,6 +25,11 @@ export interface AuthoringProject {
   faceMaterialAssignments: Record<string, Record<number, string>>
   /** componentId -> visible */
   visibility: Record<string, boolean>
+  /** componentId -> display name, capturing any renames (see useAppStore.renameComponent) —
+   * without this, re-importing the source FBX on open would regenerate every name straight from
+   * the FBX's own object names, silently reverting a rename. Optional for backward compatibility
+   * with projects saved before renaming existed. */
+  componentNames?: Record<string, string>
   /** componentId -> product/supplier metadata (see src/types/product.ts) — independent of
    * material assignment, face-level material groups, and component edges. Optional for backward
    * compatibility with projects saved before this feature existed. */

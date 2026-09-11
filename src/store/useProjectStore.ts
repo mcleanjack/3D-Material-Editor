@@ -18,6 +18,39 @@ interface ProjectState {
   setCurrentProjectName: (name: string) => void
 }
 
+/** Snapshots the current app state into an AuthoringProject record — shared by the in-browser
+ * "Save Project" path and the file-based "Save to File…" export, so both always save exactly the
+ * same shape from exactly the same source of truth. */
+export function buildProjectSnapshot(id: string, name: string): AuthoringProject {
+  const app = useAppStore.getState()
+  const now = Date.now()
+  const cam = app.sceneManager?.camera
+  return {
+    id,
+    name,
+    createdAt: now,
+    updatedAt: now,
+    sourceFbxName: app.fbxFileName ?? '',
+    sourceFbxAssetId: app.fbxAssetId ?? undefined,
+    materialAssignments: app.materialAssignments,
+    productInfo: app.productInfo,
+    faceMaterialAssignments: app.faceMaterialAssignments,
+    visibility: Object.fromEntries(Array.from(app.objectMeta.keys()).map((k) => [k, !app.hiddenComponentIds.has(k)])),
+    componentNames: Object.fromEntries(Array.from(app.objectMeta.entries()).map(([k, meta]) => [k, meta.name])),
+    folders: app.folders,
+    folderMembership: app.folderMembership,
+    edgeSettings: app.edgeSettings,
+    exportSettings: app.exportSettings,
+    sunSettings: app.sunSettings,
+    camera: cam
+      ? {
+          position: [cam.position.x, cam.position.y, cam.position.z],
+          target: [app.sceneManager!.controls.target.x, app.sceneManager!.controls.target.y, app.sceneManager!.controls.target.z],
+        }
+      : null,
+  }
+}
+
 export const useProjectStore = create<ProjectState>((set, get) => ({
   projects: [],
   currentProjectId: null,
@@ -32,32 +65,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   saveCurrentAsProject: async (name) => {
     set({ saveStatus: 'saving' })
-    const app = useAppStore.getState()
     const id = get().currentProjectId ?? makeId('proj')
-    const now = Date.now()
-    const cam = app.sceneManager?.camera
-    const project: AuthoringProject = {
-      id,
-      name: name ?? get().currentProjectName,
-      createdAt: now,
-      updatedAt: now,
-      sourceFbxName: app.fbxFileName ?? '',
-      materialAssignments: app.materialAssignments,
-      productInfo: app.productInfo,
-      faceMaterialAssignments: app.faceMaterialAssignments,
-      visibility: Object.fromEntries(Array.from(app.objectMeta.keys()).map((k) => [k, !app.hiddenComponentIds.has(k)])),
-      folders: app.folders,
-      folderMembership: app.folderMembership,
-      edgeSettings: app.edgeSettings,
-      exportSettings: app.exportSettings,
-      sunSettings: app.sunSettings,
-      camera: cam
-        ? {
-            position: [cam.position.x, cam.position.y, cam.position.z],
-            target: [app.sceneManager!.controls.target.x, app.sceneManager!.controls.target.y, app.sceneManager!.controls.target.z],
-          }
-        : null,
-    }
+    const project = buildProjectSnapshot(id, name ?? get().currentProjectName)
     await dbPutProject(project)
     set((s) => ({
       currentProjectId: id,
@@ -92,6 +101,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       })
       void app.reapplyAllAssignments()
       app.reapplyProductInfo()
+      app.applyComponentNames(project.componentNames ?? {})
     }
 
     if (project.camera && app.sceneManager) {
