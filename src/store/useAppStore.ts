@@ -916,6 +916,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { faceMaterialAssignments: nextAll }
     })
     await get().reapplyAllAssignments()
+    // The face-material assignment is a one-shot action, not a reason to stay in Face Select mode
+    // — left active, every subsequent click would keep picking faces instead of objects, making
+    // normal object selection/deselection look broken until the user noticed and switched tools
+    // back manually. Clearing the face selection and returning to the Select tool means the very
+    // next click behaves the way the rest of the app does.
+    get().clearFaceSelection()
+    set({ activeTool: 'select' })
   },
 
   setActiveTool: (tool) => set({ activeTool: tool }),

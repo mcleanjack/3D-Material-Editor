@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { COMPONENT_ID_KEY, isAuxiliaryMesh } from '../types/scene'
 import type { SunSettings } from '../types/sun'
 import { getCanonicalGeometry, getFaceCount, getFaceLocalPositions, toCanonicalFaceIndex } from './faceMaterials'
@@ -131,6 +132,15 @@ export class SceneManager {
     this.controls.enableDamping = true
     this.controls.dampingFactor = 0.08
     this.controls.target.set(0, 0.5, 0)
+
+    // MeshStandardMaterial's specular/metallic response comes almost entirely from environment
+    // reflections — with no envMap, a metallic or low-roughness material (e.g. the user's own
+    // metal/glass swatches) renders essentially black outside a single narrow specular highlight.
+    // A neutral, generated room environment (not used as the visible background, just as ambient
+    // reflection data) fixes this for every material without requiring an HDRI asset.
+    const pmremGenerator = new THREE.PMREMGenerator(this.renderer)
+    this.scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture
+    pmremGenerator.dispose()
   }
 
   mount(container: HTMLElement) {
