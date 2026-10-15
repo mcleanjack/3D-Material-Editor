@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import * as THREE from 'three'
 import type { ObjectMeta, EdgeSettings, ExportSettings } from '../types/scene'
-import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings } from '../types/scene'
+import { DEFAULT_EDGE_SETTINGS, DEFAULT_EXPORT_SETTINGS, clampEdgeSettings, isAuxiliaryMesh } from '../types/scene'
 import { renameNodeInTree, renameNodesInTree, type ObjectTreeNode } from '../types/tree'
 import type { TreeFolder } from '../types/folder'
 import { collectFolderComponentIds, getBuildStageFolders } from '../types/folder'
@@ -767,7 +767,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const meshInfos: MeshInfo[] = []
     modelRoot.traverse((obj) => {
       const mesh = obj as THREE.Mesh
-      if (!mesh.isMesh) return
+      // Edge-preview lines (LineSegments2) and the face-highlight overlay are attached into this
+      // same tree and report isMesh === true, with the line additionally stamping the same
+      // componentId as its parent (see fatLineEdges.ts) — without this check, they'd be treated
+      // as real mesh components and have their LineMaterial/overlay material overwritten with a
+      // MeshStandardMaterial below, corrupting their GPU buffers into garbage geometry.
+      if (!mesh.isMesh || isAuxiliaryMesh(mesh)) return
       const componentId = mesh.userData.componentId as string | undefined
       if (!componentId) return
       const baseMaterialId = resolveAssignment(mesh)
