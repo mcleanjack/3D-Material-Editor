@@ -340,6 +340,11 @@ export interface ExportGlbOptions {
    * don't use folders/build stages get byte-identical export behavior to before this feature. */
   folders?: Record<string, TreeFolder>
   folderMembership?: Record<string, string>
+  /** Component edges hidden entirely (see tubeEdges.ts) and individual hidden edge segments
+   * within an otherwise-exported component, keyed by componentId — see
+   * useAppStore.toggleComponentEdgesHidden/toggleEdgeHidden. Optional/defaults to none hidden. */
+  hiddenEdgeComponentIds?: ReadonlySet<string>
+  hiddenEdgeKeys?: Readonly<Record<string, ReadonlySet<string>>>
 }
 
 /**
@@ -349,7 +354,15 @@ export interface ExportGlbOptions {
  * their own material assignments so export settings (materials/textures on-off) never affect what
  * renders in the editor.
  */
-export async function exportGlb({ modelGroup, exportSettings, edgeSettings, folders = {}, folderMembership = {} }: ExportGlbOptions): Promise<Blob> {
+export async function exportGlb({
+  modelGroup,
+  exportSettings,
+  edgeSettings,
+  folders = {},
+  folderMembership = {},
+  hiddenEdgeComponentIds,
+  hiddenEdgeKeys,
+}: ExportGlbOptions): Promise<Blob> {
   const fbxRoot = modelGroup.children[0]
   if (!fbxRoot) throw new Error('No model loaded to export')
 
@@ -375,7 +388,7 @@ export async function exportGlb({ modelGroup, exportSettings, edgeSettings, fold
   // Export's own Component Edges toggle is independent of the live viewport's show/hide —
   // per spec, an author may want edges visible in the editor but excluded from the shipped GLB.
   if (exportSettings.includeEdges) {
-    const edgesGroup = buildExportEdgesMesh(modelGroup, edgeSettings)
+    const edgesGroup = buildExportEdgesMesh(modelGroup, edgeSettings, hiddenEdgeComponentIds, hiddenEdgeKeys)
     if (edgesGroup) {
       stampEdgeMeshBuildStages(edgesGroup, stageAssignments)
       exportRoot.add(edgesGroup)

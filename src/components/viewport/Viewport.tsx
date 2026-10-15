@@ -14,6 +14,7 @@ export function Viewport() {
   const selectFace = useAppStore((s) => s.selectFace)
   const addFacesToSelection = useAppStore((s) => s.addFacesToSelection)
   const clearFaceSelection = useAppStore((s) => s.clearFaceSelection)
+  const toggleEdgeHidden = useAppStore((s) => s.toggleEdgeHidden)
   const setStatusMessage = useAppStore((s) => s.setStatusMessage)
 
   const [marqueeRect, setMarqueeRect] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
@@ -76,6 +77,18 @@ export function Viewport() {
     const down = pointerDownPos.current
     pointerDownPos.current = null
     const dragDist = down ? Math.hypot(e.clientX - down.x, e.clientY - down.y) : 0
+
+    if (activeTool === 'edgeSelect') {
+      if (dragDist > 4) return // camera drag, not a click
+      const sm = sceneManagerRef.current
+      if (!sm || !edgePreview) return
+      const { x, y } = ndcFromEvent(e)
+      const hit = sm.raycastEdgeAtNdc(x, y, edgePreview.getLines())
+      if (!hit) return
+      const resolved = edgePreview.resolveHit(hit.line, hit.segmentIndex)
+      if (resolved) toggleEdgeHidden(resolved.componentId, resolved.edgeKey)
+      return
+    }
 
     if (activeTool === 'faceSelect') {
       const sm = sceneManagerRef.current

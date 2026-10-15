@@ -41,6 +41,8 @@ export function buildProjectSnapshot(id: string, name: string): AuthoringProject
     folderMembership: app.folderMembership,
     edgeSettings: app.edgeSettings,
     exportSettings: app.exportSettings,
+    hiddenEdgeComponentIds: Array.from(app.hiddenEdgeComponentIds),
+    hiddenEdgeKeys: Object.fromEntries(Object.entries(app.hiddenEdgeKeys).map(([k, v]) => [k, Array.from(v)])),
     sunSettings: app.sunSettings,
     camera: cam
       ? {
@@ -98,10 +100,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         ),
         folders: project.folders ?? {},
         folderMembership: project.folderMembership ?? {},
+        hiddenEdgeComponentIds: new Set(project.hiddenEdgeComponentIds ?? []),
+        hiddenEdgeKeys: Object.fromEntries(Object.entries(project.hiddenEdgeKeys ?? {}).map(([k, v]) => [k, new Set(v)])),
       })
       void app.reapplyAllAssignments()
       app.reapplyProductInfo()
       app.applyComponentNames(project.componentNames ?? {})
+      app.rebuildEdgePreview()
     }
 
     if (project.camera && app.sceneManager) {

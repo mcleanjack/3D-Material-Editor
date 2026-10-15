@@ -35,3 +35,17 @@ export function clearAllEdgesCache() {
   for (const entry of cache.values()) entry.geometry.dispose()
   cache.clear()
 }
+
+/** A stable identity for one edge segment, derived from its own (local-space) endpoint
+ * positions rather than its position in the generated array — so a specific physical edge keeps
+ * the same key across re-generation (e.g. after an angle-threshold change re-includes/excludes
+ * other edges and shifts everyone else's array index). Rounded to 4 decimal places (±0.1mm at
+ * meter scale) to tolerate floating-point noise, and endpoint-order-independent (the two ends are
+ * compared and sorted) so it doesn't matter which end EdgesGeometry happened to list first. */
+export function edgeSegmentKey(ax: number, ay: number, az: number, bx: number, by: number, bz: number): string {
+  const round = (n: number) => (Math.round(n * 1e4) / 1e4).toFixed(4)
+  const a = `${round(ax)},${round(ay)},${round(az)}`
+  const b = `${round(bx)},${round(by)},${round(bz)}`
+  return a <= b ? `${a}|${b}` : `${b}|${a}`
+}
+

@@ -1,6 +1,8 @@
 import * as THREE from 'three'
-import { getEdgesGeometry } from './edgeGeneration'
+import { edgeSegmentKey, getEdgesGeometry } from './edgeGeneration'
 import { EDGES_EXPORT_NAME, isAuxiliaryMesh, type EdgeSettings } from '../../types/scene'
+
+const EMPTY_HIDDEN_KEYS: ReadonlySet<string> = new Set()
 
 /** Meters of ribbon half-width per unit of "Edge Line Weight" (which is specified in the UI as an
  * approximate 1-5px screen-space value). glTF has no notion of screen-space line width, so
@@ -58,8 +60,19 @@ function appendSegmentRibbon(positions: number[], indices: number[], p1: THREE.V
  * component's edges together with the component itself (or by build stage, once exportGlb.ts
  * stamps matching buildStage fields onto these meshes too). All meshes share one material
  * instance, so this is still one shared material in the exported GLB either way.
+ *
+ * `hiddenEdgeComponentIds` drops a component's edge mesh entirely (so it never joins the group at
+ * all); `hiddenEdgeKeys` (componentId -> Set of edgeSegmentKey) drops individual ribbon segments
+ * within a mesh that's still otherwise exported — both authored in the Object Tree/viewport (see
+ * useAppStore's toggleComponentEdgesHidden/toggleEdgeHidden) and read here unconditionally so a
+ * downstream GLB never carries geometry for a line the author explicitly hid.
  */
-export function buildExportEdgesMesh(modelGroup: THREE.Group, settings: EdgeSettings): THREE.Group | null {
+export function buildExportEdgesMesh(
+  modelGroup: THREE.Group,
+  settings: EdgeSettings,
+  hiddenEdgeComponentIds: ReadonlySet<string> = EMPTY_HIDDEN_KEYS,
+  hiddenEdgeKeys: Readonly<Record<string, ReadonlySet<string>>> = {},
+): THREE.Group | null {
   const halfWidth = Math.max(settings.lineWeight, 0.1) * RIBBON_HALF_WIDTH_PER_WEIGHT
 
   modelGroup.updateWorldMatrix(true, true)
@@ -80,13 +93,20 @@ export function buildExportEdgesMesh(modelGroup: THREE.Group, settings: EdgeSett
     if (!mesh.isMesh || !mesh.geometry || !mesh.visible || isAuxiliaryMesh(mesh)) return
 
     const sourceComponentId = mesh.userData.componentId as string | undefined
+    if (sourceComponentId && hiddenEdgeComponentIds.has(sourceComponentId)) return
+
     const edgesGeom = getEdgesGeometry(mesh.geometry, settings.angleThreshold)
     const arr = edgesGeom.attributes.position.array as Float32Array
     if (arr.length === 0) return
 
+    const hiddenKeys = (sourceComponentId && hiddenEdgeKeys[sourceComponentId]) || EMPTY_HIDDEN_KEYS
     const positions: number[] = []
     const indices: number[] = []
     for (let i = 0; i < arr.length; i += 6) {
+      if (hiddenKeys.size > 0) {
+        const key = edgeSegmentKey(arr[i], arr[i + 1], arr[i + 2], arr[i + 3], arr[i + 4], arr[i + 5])
+        if (hiddenKeys.has(key)) continue
+      }
       _p1.set(arr[i], arr[i + 1], arr[i + 2]).applyMatrix4(mesh.matrixWorld)
       _p2.set(arr[i + 3], arr[i + 4], arr[i + 5]).applyMatrix4(mesh.matrixWorld)
       appendSegmentRibbon(positions, indices, _p1, _p2, halfWidth)

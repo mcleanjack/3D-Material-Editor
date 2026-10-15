@@ -44,6 +44,13 @@ export interface AuthoringProject {
 
   edgeSettings: EdgeSettings
   exportSettings: ExportSettings
+  /** componentIds with every edge hidden entirely, and componentId -> individual hidden edge
+   * segment keys (see src/three/edges/edgeGeneration.ts's edgeSegmentKey) — independent of
+   * material/geometry visibility. Arrays for JSON-serializability; converted to/from Set at
+   * save/load like hiddenComponentIds. Optional for backward compatibility with projects saved
+   * before this feature existed. */
+  hiddenEdgeComponentIds?: string[]
+  hiddenEdgeKeys?: Record<string, string[]>
   /** Viewport-only sun/shadow preview (see src/types/sun.ts) — deliberately kept as its own
    * field, separate from material/export data. Optional for backward compatibility with
    * projects saved before this feature existed. */
