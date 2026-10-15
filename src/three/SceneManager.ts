@@ -430,6 +430,24 @@ export class SceneManager {
     return { componentId, faceIndices, tooDense: false }
   }
 
+  /** Edge Select mode: raycast against the live edge-preview lines only (not the model mesh
+   * surfaces), returning the specific LineSegments2 hit and which of its rendered segments
+   * (LineSegments2's own raycast `faceIndex`) — see EdgePreviewController.resolveHit for turning
+   * that back into a stable edge key. `raycaster.params.Line2.threshold` isn't set by default
+   * (THREE.Raycaster only pre-populates Mesh/Line/LOD/Points/Sprite), so without it a line is
+   * only hit by a mathematically-exact ray; a few extra px of tolerance makes individual edges
+   * comfortably clickable without needing pixel-perfect aim. */
+  raycastEdgeAtNdc(ndcX: number, ndcY: number, edgeLines: THREE.Object3D[]): { line: THREE.Object3D; segmentIndex: number } | null {
+    if (edgeLines.length === 0) return null
+    const raycaster = new THREE.Raycaster()
+    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera)
+    raycaster.params.Line2 = { threshold: 6 }
+    const hits = raycaster.intersectObjects(edgeLines, false)
+    const hit = hits.find((h) => h.faceIndex != null && SceneManager.isEffectivelyVisible(h.object))
+    if (!hit) return null
+    return { line: hit.object, segmentIndex: hit.faceIndex! }
+  }
+
   /** Shows (or clears, when componentId is null) a semi-transparent overlay over the given
    * canonical face indices of one object. Built from the mesh's canonical geometry so it stays
    * correct regardless of whether that mesh currently has a derived multi-material geometry, and

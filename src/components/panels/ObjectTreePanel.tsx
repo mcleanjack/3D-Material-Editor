@@ -163,6 +163,9 @@ function TreeRow({
   const hiddenComponentIds = useAppStore((s) => s.hiddenComponentIds)
   const folderMembership = useAppStore((s) => s.folderMembership)
   const hasProductInfo = useAppStore((s) => !!s.productInfo[node.componentId])
+  const hasHiddenEdges = useAppStore(
+    (s) => s.hiddenEdgeComponentIds.has(node.componentId) || (s.hiddenEdgeKeys[node.componentId]?.size ?? 0) > 0,
+  )
   const selectComponent = useAppStore((s) => s.selectComponent)
   const selectComponentRange = useAppStore((s) => s.selectComponentRange)
   const reorderComponentsInFolder = useAppStore((s) => s.reorderComponentsInFolder)
@@ -253,6 +256,12 @@ function TreeRow({
           <span
             title="Has product information"
             className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400"
+          />
+        )}
+        {hasHiddenEdges && (
+          <span
+            title="Some or all component edges are hidden on this object"
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
           />
         )}
         <button
@@ -446,6 +455,7 @@ function SelectionAssignment() {
   const materialAssignments = useAppStore((s) => s.materialAssignments)
   const assignMaterialToComponents = useAppStore((s) => s.assignMaterialToComponents)
   const createFolderFromSelection = useAppStore((s) => s.createFolderFromSelection)
+  const toggleComponentEdgesHidden = useAppStore((s) => s.toggleComponentEdgesHidden)
   const [pending, setPending] = useState<string | null | undefined>(undefined)
   const [creatingFolder, setCreatingFolder] = useState(false)
 
@@ -461,15 +471,27 @@ function SelectionAssignment() {
         <div className="text-[11px] font-medium text-[var(--text)]">
           {selectedComponentIds.length} selected object{selectedComponentIds.length > 1 ? 's' : ''}
         </div>
-        <button
-          className="shrink-0 rounded bg-[#2a2c33] px-1.5 py-1 text-[11px] text-[var(--text)] hover:bg-[#33353d]"
-          onClick={() => setCreatingFolder(true)}
-        >
-          <span className="inline-flex items-center gap-1">
-            <Icon name="folder" size={11} />
-            New Folder from Selection
-          </span>
-        </button>
+        <div className="flex shrink-0 gap-1">
+          <button
+            title="Hide or show every edge line on the selected component(s), in the viewport and in GLB export"
+            className="rounded bg-[#2a2c33] px-1.5 py-1 text-[11px] text-[var(--text)] hover:bg-[#33353d]"
+            onClick={() => toggleComponentEdgesHidden(selectedComponentIds)}
+          >
+            <span className="inline-flex items-center gap-1">
+              <Icon name="edges" size={11} />
+              Hide/Show Edges
+            </span>
+          </button>
+          <button
+            className="rounded bg-[#2a2c33] px-1.5 py-1 text-[11px] text-[var(--text)] hover:bg-[#33353d]"
+            onClick={() => setCreatingFolder(true)}
+          >
+            <span className="inline-flex items-center gap-1">
+              <Icon name="folder" size={11} />
+              New Folder from Selection
+            </span>
+          </button>
+        </div>
       </div>
       <div className="mb-1.5 text-[11px] text-[var(--text-dim)]">
         Assign material to {selectedComponentIds.length} selected object{selectedComponentIds.length > 1 ? 's' : ''}

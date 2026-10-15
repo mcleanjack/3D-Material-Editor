@@ -41,6 +41,8 @@ export function TopBar() {
   const objectMeta = useAppStore((s) => s.objectMeta)
   const folders = useAppStore((s) => s.folders)
   const folderMembership = useAppStore((s) => s.folderMembership)
+  const hiddenEdgeComponentIds = useAppStore((s) => s.hiddenEdgeComponentIds)
+  const hiddenEdgeKeys = useAppStore((s) => s.hiddenEdgeKeys)
   const setStatusMessage = useAppStore((s) => s.setStatusMessage)
 
   const projectName = useProjectStore((s) => s.currentProjectName)
@@ -88,6 +90,8 @@ export function TopBar() {
         edgeSettings,
         folders,
         folderMembership,
+        hiddenEdgeComponentIds,
+        hiddenEdgeKeys,
       })
 
       let sizeInfo: OptimizeSizeInfo | undefined

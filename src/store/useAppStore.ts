@@ -18,7 +18,7 @@ import { getCanonicalGeometry, getFaceCount, rebuildMeshFaceMaterials, restoreCa
 import { useMaterialLibraryStore } from './useMaterialLibraryStore'
 import { makeId } from '../utils/id'
 
-export type ActiveTool = 'select' | 'orbit' | 'pan' | 'zoom' | 'measure' | 'faceSelect'
+export type ActiveTool = 'select' | 'orbit' | 'pan' | 'zoom' | 'measure' | 'faceSelect' | 'edgeSelect'
 export type RightPanelKey = 'objectTree' | 'materials' | 'materialEditor' | 'edgeSettings' | 'sun' | null
 
 /** componentId -> canonical face index -> assigned custom material id. Serializable as-is for
@@ -83,6 +83,13 @@ interface AppState {
 
   // Edge system
   edgeSettings: EdgeSettings
+  /** Components whose edges are hidden entirely — in the live preview and at GLB export.
+   * componentId-scoped like hiddenComponentIds, but tracked separately: hiding a component's
+   * edges never touches its geometry/material visibility and vice versa. */
+  hiddenEdgeComponentIds: Set<string>
+  /** Individual edge segments hidden within an otherwise-visible component, keyed by componentId
+   * (see edgeGeneration.ts's edgeSegmentKey for how a segment's key is derived). */
+  hiddenEdgeKeys: Record<string, Set<string>>
 
   // Sun (viewport-only lighting/shadow preview — see src/types/sun.ts)
   sunSettings: SunSettings
@@ -169,6 +176,23 @@ interface AppState {
   resetCamera: () => void
 
   setEdgeSettings: (partial: Partial<EdgeSettings>) => void
+  /** Rebuilds the live edge-preview lines from current edgeSettings + hidden-edge state — the
+   * one place that assembles all four rebuild() arguments, called by every action that changes
+   * any of them instead of each duplicating the same lookup. */
+  rebuildEdgePreview: () => void
+  /** Toggles every given componentId's edges entirely on/off (expanded to include all
+   * descendant mesh componentIds, so selecting a group hides every mesh's edges underneath it) —
+   * the Object Tree's "Hide/Show Component Edges" bulk action for the current selection.
+   * Majority-state toggle: if every one is already hidden this shows them, otherwise it hides
+   * whichever aren't already. */
+  toggleComponentEdgesHidden: (componentIds: string[]) => void
+  /** Toggles one individual edge segment (identified by its stable key — see
+   * edgeGeneration.ts's edgeSegmentKey) hidden/shown on one component — the Edge Select tool's
+   * click-to-hide action. */
+  toggleEdgeHidden: (componentId: string, edgeKey: string) => void
+  /** Clears every hidden-edge-component and hidden-individual-edge entry — the Component Edge
+   * Settings panel's "Show All Hidden Edges" reset. */
+  showAllHiddenEdges: () => void
   setSunSettings: (partial: Partial<SunSettings>) => void
   setExportSettings: (partial: Partial<ExportSettings>) => void
 
@@ -188,6 +212,28 @@ function applyVisibility(root: THREE.Object3D, hidden: Set<string>, isolate: Set
       obj.visible = !hidden.has(id)
     }
   })
+}
+
+/** Every componentId under `selectedIds` — groups and meshes alike, including the selected ids
+ * themselves and every descendant's — so a bulk action on a group (e.g. a whole Revit family
+ * instance) reaches every mesh underneath it, not just the exact node that was clicked. Mirrors
+ * isolateSelected's own ancestor-chain walk. */
+function collectComponentIdsIncludingDescendants(modelRoot: THREE.Object3D, selectedIds: string[]): Set<string> {
+  const include = new Set<string>()
+  modelRoot.traverse((obj) => {
+    const id = obj.userData.componentId as string | undefined
+    if (!id) return
+    let cur: THREE.Object3D | null = obj
+    while (cur) {
+      const curId = cur.userData.componentId as string | undefined
+      if (curId && selectedIds.includes(curId)) {
+        include.add(id)
+        break
+      }
+      cur = cur.parent
+    }
+  })
+  return include
 }
 
 let isolateSet: Set<string> | null = null
@@ -242,6 +288,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   axesVisible: true,
 
   edgeSettings: { ...DEFAULT_EDGE_SETTINGS },
+  hiddenEdgeComponentIds: new Set(),
+  hiddenEdgeKeys: {},
   sunSettings: { ...DEFAULT_SUN_SETTINGS },
   exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
 
@@ -280,6 +328,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         isolateActive: false,
         folders: {},
         folderMembership: {},
+        hiddenEdgeComponentIds: new Set(),
+        hiddenEdgeKeys: {},
         selectedComponentIds: [],
         lastSelectedComponentId: null,
         hoveredComponentId: null,
@@ -823,10 +873,53 @@ export const useAppStore = create<AppState>((set, get) => ({
   setEdgeSettings: (partial) => {
     const merged = clampEdgeSettings({ ...get().edgeSettings, ...partial })
     set({ edgeSettings: merged })
-    const { modelRoot, edgePreview } = get()
+    get().rebuildEdgePreview()
+  },
+
+  /** Single source of truth for rebuilding the live edge-preview lines — every setting that can
+   * affect which segments are drawn (angle threshold, enabled, and now the hidden-edge sets)
+   * funnels through here instead of each caller re-deriving the same four arguments. */
+  rebuildEdgePreview: () => {
+    const { modelRoot, edgePreview, edgeSettings, hiddenEdgeComponentIds, hiddenEdgeKeys } = get()
     if (!modelRoot || !edgePreview) return
-    edgePreview.applyAppearance(merged)
-    edgePreview.rebuild(modelRoot, merged.angleThreshold, merged.enabled)
+    edgePreview.applyAppearance(edgeSettings)
+    edgePreview.rebuild(modelRoot, edgeSettings.angleThreshold, edgeSettings.enabled, hiddenEdgeComponentIds, hiddenEdgeKeys)
+  },
+
+  toggleComponentEdgesHidden: (componentIds) => {
+    const { modelRoot } = get()
+    if (!modelRoot || componentIds.length === 0) return
+    const expanded = collectComponentIdsIncludingDescendants(modelRoot, componentIds)
+    if (expanded.size === 0) return
+    const { hiddenEdgeComponentIds } = get()
+    const allHidden = Array.from(expanded).every((id) => hiddenEdgeComponentIds.has(id))
+    set((s) => {
+      const next = new Set(s.hiddenEdgeComponentIds)
+      for (const id of expanded) {
+        if (allHidden) next.delete(id)
+        else next.add(id)
+      }
+      return { hiddenEdgeComponentIds: next }
+    })
+    get().rebuildEdgePreview()
+  },
+
+  toggleEdgeHidden: (componentId, edgeKey) => {
+    set((s) => {
+      const next = { ...s.hiddenEdgeKeys }
+      const forComponent = new Set(next[componentId] ?? [])
+      if (forComponent.has(edgeKey)) forComponent.delete(edgeKey)
+      else forComponent.add(edgeKey)
+      if (forComponent.size === 0) delete next[componentId]
+      else next[componentId] = forComponent
+      return { hiddenEdgeKeys: next }
+    })
+    get().rebuildEdgePreview()
+  },
+
+  showAllHiddenEdges: () => {
+    set({ hiddenEdgeComponentIds: new Set(), hiddenEdgeKeys: {} })
+    get().rebuildEdgePreview()
   },
 
   setSunSettings: (partial) => {

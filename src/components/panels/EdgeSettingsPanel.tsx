@@ -27,6 +27,12 @@ export function EdgeSettingsPanel() {
   const modelRoot = useAppStore((s) => s.modelRoot)
   const exportSettings = useAppStore((s) => s.exportSettings)
   const setExportSettings = useAppStore((s) => s.setExportSettings)
+  const hiddenEdgeComponentIds = useAppStore((s) => s.hiddenEdgeComponentIds)
+  const hiddenEdgeKeys = useAppStore((s) => s.hiddenEdgeKeys)
+  const showAllHiddenEdges = useAppStore((s) => s.showAllHiddenEdges)
+
+  const hiddenIndividualEdgeCount = Object.values(hiddenEdgeKeys).reduce((sum, keys) => sum + keys.size, 0)
+  const hasAnyHiddenEdges = hiddenEdgeComponentIds.size > 0 || hiddenIndividualEdgeCount > 0
 
   return (
     <PanelShell title="Component Edge Settings" onClose={() => setActiveRightPanel(null)}>
@@ -107,6 +113,28 @@ export function EdgeSettingsPanel() {
         every triangulated mesh edge — so the result reads as a clean construction-detail outline rather
         than a technical wireframe.
       </p>
+
+      <div className="border-t px-3 py-2.5" style={{ borderColor: 'var(--panel-border)' }}>
+        <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text)]">Hidden Edges</h3>
+        <p className="mb-1.5 text-[10px] leading-relaxed text-[var(--text-faint)]">
+          Use the Edge Select tool (left tool rail) to click an individual edge and hide it, or select a
+          component in the Object Tree and use Hide/Show Edges to hide every line on it at once. Hidden
+          edges stay hidden in GLB export — nothing is deleted, so Show All below brings everything back.
+        </p>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-[var(--text)]">
+            {hiddenEdgeComponentIds.size} component{hiddenEdgeComponentIds.size === 1 ? '' : 's'} fully hidden,{' '}
+            {hiddenIndividualEdgeCount} individual edge{hiddenIndividualEdgeCount === 1 ? '' : 's'} hidden
+          </span>
+          <button
+            className="shrink-0 rounded bg-[#2a2c33] px-2 py-1 text-[11px] text-[var(--text)] hover:bg-[#33353d] disabled:opacity-40"
+            disabled={!hasAnyHiddenEdges}
+            onClick={showAllHiddenEdges}
+          >
+            Show All Hidden Edges
+          </button>
+        </div>
+      </div>
 
       <div className="border-t px-3 py-2.5" style={{ borderColor: 'var(--panel-border)' }}>
         <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text)]">GLB Export Settings</h3>
