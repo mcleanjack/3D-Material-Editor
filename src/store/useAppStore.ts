@@ -184,7 +184,13 @@ interface AppState {
   reapplyProductInfo: () => void
 
   // Face-level assignment
-  selectFace: (componentId: string, faceIndex: number, additive: boolean) => void
+  /** Click-to-select in Face Select mode. `faceIndices` is a whole reconstructed polygon's worth
+   * of canonical triangle indices (see three/faceGroups.ts via SceneManager.raycastFaceAtNdc's
+   * FaceHit.faceGroupIndices), not a single triangle — so clicking one half of a triangulated
+   * quad selects the whole quad. Additive (shift-click) toggles the whole group together: if
+   * every one of its triangles is already selected this deselects them all, otherwise it selects
+   * whichever aren't already — mirrors toggleComponentEdgesHidden's majority-state toggle. */
+  selectFace: (componentId: string, faceIndices: number[], additive: boolean) => void
   addFacesToSelection: (componentId: string, faceIndices: number[]) => void
   clearFaceSelection: () => void
   assignMaterialToFaceSelection: (materialId: string | null) => Promise<void>
@@ -925,14 +931,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (modelRoot) applyVisibility(modelRoot, hiddenComponentIds, isolateActive ? isolateSet : null, deletedComponentIds)
   },
 
-  selectFace: (componentId, faceIndex, additive) => {
+  selectFace: (componentId, faceIndices, additive) => {
     set((s) => {
       if (!additive || s.faceSelectComponentId !== componentId) {
-        return { faceSelectComponentId: componentId, faceSelectedFaceIndices: new Set([faceIndex]) }
+        return { faceSelectComponentId: componentId, faceSelectedFaceIndices: new Set(faceIndices) }
       }
       const next = new Set(s.faceSelectedFaceIndices)
-      if (next.has(faceIndex)) next.delete(faceIndex)
-      else next.add(faceIndex)
+      const allSelected = faceIndices.every((f) => next.has(f))
+      for (const f of faceIndices) {
+        if (allSelected) next.delete(f)
+        else next.add(f)
+      }
       return { faceSelectedFaceIndices: next }
     })
     const { faceSelectComponentId, faceSelectedFaceIndices, sceneManager } = get()

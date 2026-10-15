@@ -122,7 +122,7 @@ export function Viewport() {
       if (!sm) return
       const { x, y } = ndcFromEvent(e)
       const hit = sm.raycastFaceAtNdc(x, y)
-      if (hit) selectFace(hit.componentId, hit.canonicalFaceIndex, e.shiftKey)
+      if (hit) selectFace(hit.componentId, hit.faceGroupIndices, e.shiftKey)
       else if (!e.shiftKey) clearFaceSelection()
       return
     }
