@@ -60,6 +60,9 @@ interface AppState {
   // Visibility / isolation
   hiddenComponentIds: Set<string>
   isolateActive: boolean
+  /** componentIds removed via deleteComponents — see that action's doc comment. Distinct from
+   * hiddenComponentIds: "Show All" never brings these back, only undo (or re-importing) does. */
+  deletedComponentIds: Set<string>
 
   // Object Tree folder grouping — organizational only, never touches the scene graph, the
   // FBX-derived hierarchy, or GLB export. See src/types/folder.ts.
@@ -126,6 +129,14 @@ interface AppState {
   isolateSelected: () => void
   exitIsolate: () => void
   showAll: () => void
+  /** Removes the given componentIds (and all their descendants) from the Object Tree, the
+   * viewport, and GLB export. A *soft* delete — it never touches the live Three.js scene graph,
+   * objectTree, or objectMeta, only adds to deletedComponentIds and clears any
+   * selection/hover/face-selection pointing at what was just deleted — so it rides the same
+   * undo/redo snapshot system as every other content change (see pushHistory) without needing
+   * that system to also know how to resurrect removed geometry. "Show All" never undoes a
+   * delete; only Ctrl+Z (or re-importing the source FBX) does. */
+  deleteComponents: (componentIds: string[]) => void
 
   createFolderFromSelection: (name: string, componentIds: string[]) => string
   renameFolder: (folderId: string, name: string) => void
@@ -155,6 +166,12 @@ interface AppState {
   assignMaterialToComponents: (materialId: string | null, componentIds: string[]) => Promise<void>
   assignMaterialToFbxMaterialName: (materialId: string | null, fbxMaterialName: string) => Promise<void>
   reapplyAllAssignments: () => Promise<void>
+  /** Re-stamps hiddenComponentIds/deletedComponentIds/isolate state onto the live model's
+   * `.visible` flags — needed because, like reapplyAllAssignments/reapplyProductInfo, the
+   * store's own records survive a project load but the actual THREE objects already in the scene
+   * don't get told about it as a side effect of that `set()` the way every other action in this
+   * store applies its own visibility change immediately. */
+  reapplyVisibility: () => void
 
   setProductInfo: (componentId: string, info: ProductInfo) => void
   /** Applies the same ProductInfo to every given componentId in one batched update (mirrors
@@ -219,11 +236,15 @@ interface AppState {
   redo: () => void
 }
 
-function applyVisibility(root: THREE.Object3D, hidden: Set<string>, isolate: Set<string> | null) {
+/** `deleted` components are always invisible, isolate mode or not — unlike `hidden`, "Show All"
+ * never brings them back (only undo, or re-importing, does); see deleteComponents. */
+function applyVisibility(root: THREE.Object3D, hidden: Set<string>, isolate: Set<string> | null, deleted: ReadonlySet<string>) {
   root.traverse((obj) => {
     const id = obj.userData.componentId as string | undefined
     if (!id) return
-    if (isolate) {
+    if (deleted.has(id)) {
+      obj.visible = false
+    } else if (isolate) {
       obj.visible = isolate.has(id)
     } else {
       obj.visible = !hidden.has(id)
@@ -245,6 +266,7 @@ function getHistorySnapshot(s: AppState): HistorySnapshot {
     folderMembership: s.folderMembership,
     componentNames: Object.fromEntries(Array.from(s.objectMeta.entries()).map(([k, m]) => [k, m.name])),
     hiddenComponentIds: Array.from(s.hiddenComponentIds),
+    deletedComponentIds: Array.from(s.deletedComponentIds),
     hiddenEdgeComponentIds: Array.from(s.hiddenEdgeComponentIds),
     hiddenEdgeKeys: Object.fromEntries(Object.entries(s.hiddenEdgeKeys).map(([k, v]) => [k, Array.from(v)])),
     edgeSettings: s.edgeSettings,
@@ -321,6 +343,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   hiddenComponentIds: new Set(),
   isolateActive: false,
+  deletedComponentIds: new Set(),
 
   folders: {},
   folderMembership: {},
@@ -378,6 +401,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         faceSelectedFaceIndices: new Set(),
         hiddenComponentIds: new Set(),
         isolateActive: false,
+        deletedComponentIds: new Set(),
         folders: {},
         folderMembership: {},
         hiddenEdgeComponentIds: new Set(),
@@ -485,8 +509,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       else next.add(componentId)
       return { hiddenComponentIds: next }
     })
-    const { modelRoot, hiddenComponentIds, isolateActive } = get()
-    if (modelRoot) applyVisibility(modelRoot, hiddenComponentIds, isolateActive ? isolateSet : null)
+    const { modelRoot, hiddenComponentIds, isolateActive, deletedComponentIds } = get()
+    if (modelRoot) applyVisibility(modelRoot, hiddenComponentIds, isolateActive ? isolateSet : null, deletedComponentIds)
   },
 
   isolateSelected: () => {
@@ -510,22 +534,46 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
     isolateSet = include
     set({ isolateActive: true })
-    applyVisibility(modelRoot, get().hiddenComponentIds, isolateSet)
+    applyVisibility(modelRoot, get().hiddenComponentIds, isolateSet, get().deletedComponentIds)
   },
 
   exitIsolate: () => {
     isolateSet = null
     set({ isolateActive: false })
-    const { modelRoot, hiddenComponentIds } = get()
-    if (modelRoot) applyVisibility(modelRoot, hiddenComponentIds, null)
+    const { modelRoot, hiddenComponentIds, deletedComponentIds } = get()
+    if (modelRoot) applyVisibility(modelRoot, hiddenComponentIds, null, deletedComponentIds)
   },
 
   showAll: () => {
     get().pushHistory('visibility')
     isolateSet = null
     set({ hiddenComponentIds: new Set(), isolateActive: false })
+    const { modelRoot, deletedComponentIds } = get()
+    if (modelRoot) applyVisibility(modelRoot, new Set(), null, deletedComponentIds)
+  },
+
+  deleteComponents: (componentIds) => {
     const { modelRoot } = get()
-    if (modelRoot) applyVisibility(modelRoot, new Set(), null)
+    if (!modelRoot || componentIds.length === 0) return
+    // Expanded to every descendant up front (mirrors toggleComponentEdgesHidden) so deleting a
+    // group/Revit family instance removes every mesh underneath it, not just the exact node
+    // clicked — applyVisibility/export both key off this fully-expanded set, not ancestry.
+    const expanded = collectComponentIdsIncludingDescendants(modelRoot, componentIds)
+    if (expanded.size === 0) return
+    get().pushHistory('delete')
+    set((s) => ({
+      deletedComponentIds: new Set([...s.deletedComponentIds, ...expanded]),
+      selectedComponentIds: s.selectedComponentIds.filter((id) => !expanded.has(id)),
+      hoveredComponentId: s.hoveredComponentId && expanded.has(s.hoveredComponentId) ? null : s.hoveredComponentId,
+      lastSelectedComponentId: s.lastSelectedComponentId && expanded.has(s.lastSelectedComponentId) ? null : s.lastSelectedComponentId,
+      faceSelectComponentId: s.faceSelectComponentId && expanded.has(s.faceSelectComponentId) ? null : s.faceSelectComponentId,
+      faceSelectedFaceIndices: s.faceSelectComponentId && expanded.has(s.faceSelectComponentId) ? new Set<number>() : s.faceSelectedFaceIndices,
+    }))
+    const { hiddenComponentIds, isolateActive } = get()
+    applyVisibility(modelRoot, hiddenComponentIds, isolateActive ? isolateSet : null, get().deletedComponentIds)
+    get().sceneManager?.setSelection(get().selectedComponentIds)
+    get().sceneManager?.setHover(get().hoveredComponentId)
+    get().sceneManager?.setFaceHighlight(get().faceSelectComponentId, get().faceSelectedFaceIndices)
   },
 
   createFolderFromSelection: (name, componentIds) => {
@@ -639,8 +687,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   toggleFolderVisibility: (folderId) => {
-    const { folders, folderMembership, hiddenComponentIds } = get()
-    const ids = collectFolderComponentIds(folders, folderMembership, folderId)
+    const { folders, folderMembership, hiddenComponentIds, deletedComponentIds } = get()
+    const ids = collectFolderComponentIds(folders, folderMembership, folderId).filter((id) => !deletedComponentIds.has(id))
     if (ids.length === 0) return
     get().pushHistory('visibility')
     const allHidden = ids.every((id) => hiddenComponentIds.has(id))
@@ -653,12 +701,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { hiddenComponentIds: next }
     })
     const { modelRoot, isolateActive } = get()
-    if (modelRoot) applyVisibility(modelRoot, get().hiddenComponentIds, isolateActive ? isolateSet : null)
+    if (modelRoot) applyVisibility(modelRoot, get().hiddenComponentIds, isolateActive ? isolateSet : null, get().deletedComponentIds)
   },
 
   selectFolderContents: (folderId, additive = false) => {
-    const { folders, folderMembership } = get()
-    const ids = collectFolderComponentIds(folders, folderMembership, folderId)
+    const { folders, folderMembership, deletedComponentIds } = get()
+    const ids = collectFolderComponentIds(folders, folderMembership, folderId).filter((id) => !deletedComponentIds.has(id))
     set((s) => {
       if (!additive) return { selectedComponentIds: ids }
       const nextSet = new Set(s.selectedComponentIds)
@@ -872,6 +920,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
+  reapplyVisibility: () => {
+    const { modelRoot, hiddenComponentIds, isolateActive, deletedComponentIds } = get()
+    if (modelRoot) applyVisibility(modelRoot, hiddenComponentIds, isolateActive ? isolateSet : null, deletedComponentIds)
+  },
+
   selectFace: (componentId, faceIndex, additive) => {
     set((s) => {
       if (!additive || s.faceSelectComponentId !== componentId) {
@@ -1052,6 +1105,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       folders: snapshot.folders,
       folderMembership: snapshot.folderMembership,
       hiddenComponentIds: new Set(snapshot.hiddenComponentIds),
+      deletedComponentIds: new Set(snapshot.deletedComponentIds),
       hiddenEdgeComponentIds: new Set(snapshot.hiddenEdgeComponentIds),
       hiddenEdgeKeys: Object.fromEntries(Object.entries(snapshot.hiddenEdgeKeys).map(([k, v]) => [k, new Set(v)])),
       edgeSettings: clampEdgeSettings(snapshot.edgeSettings),
@@ -1059,7 +1113,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       sunSettings: snapshot.sunSettings,
     })
     get().applyComponentNames(snapshot.componentNames)
-    if (modelRoot) applyVisibility(modelRoot, get().hiddenComponentIds, isolateActive ? isolateSet : null)
+    if (modelRoot) applyVisibility(modelRoot, get().hiddenComponentIds, isolateActive ? isolateSet : null, get().deletedComponentIds)
     void get().reapplyAllAssignments()
     get().reapplyProductInfo()
     get().rebuildEdgePreview()

@@ -11,6 +11,7 @@ import { injectGlbRootExtras } from './glbBinary'
 import { CANONICAL_GEOMETRY_KEY, DERIVED_MAP_KEY } from './faceMaterials'
 
 const PREVIEW_LINE_NAME = '__edge_preview_line__'
+const EMPTY_DELETED: ReadonlySet<string> = new Set()
 
 /** userData keys that exist purely to support in-app editing (the canonical/pre-face-override
  * geometry and material every mesh's live authoring state can fall back to — see
@@ -23,10 +24,12 @@ const PREVIEW_LINE_NAME = '__edge_preview_line__'
  * build-stage fields). */
 const INTERNAL_USER_DATA_KEYS = [CANONICAL_GEOMETRY_KEY, DERIVED_MAP_KEY, 'originalMaterial'] as const
 
-function stripNonExportableChildren(root: THREE.Object3D) {
+function stripNonExportableChildren(root: THREE.Object3D, deletedComponentIds: ReadonlySet<string>) {
   const toRemove: THREE.Object3D[] = []
   root.traverse((obj) => {
     if (obj.name === PREVIEW_LINE_NAME) toRemove.push(obj)
+    const componentId = obj.userData.componentId as string | undefined
+    if (componentId && deletedComponentIds.has(componentId)) toRemove.push(obj)
   })
   for (const obj of toRemove) obj.parent?.remove(obj)
 }
@@ -345,6 +348,12 @@ export interface ExportGlbOptions {
    * useAppStore.toggleComponentEdgesHidden/toggleEdgeHidden. Optional/defaults to none hidden. */
   hiddenEdgeComponentIds?: ReadonlySet<string>
   hiddenEdgeKeys?: Readonly<Record<string, ReadonlySet<string>>>
+  /** componentIds deleted from the model (see useAppStore.deleteComponents) — their geometry and
+   * component edges are excluded entirely, not just hidden (unlike plain hiddenComponentIds,
+   * which the GLB still includes — see the onlyVisible: false export option below). Already
+   * expanded to include every descendant at delete time, so no further expansion is needed here.
+   * Optional/defaults to none deleted. */
+  deletedComponentIds?: ReadonlySet<string>
 }
 
 /**
@@ -362,6 +371,7 @@ export async function exportGlb({
   folderMembership = {},
   hiddenEdgeComponentIds,
   hiddenEdgeKeys,
+  deletedComponentIds,
 }: ExportGlbOptions): Promise<Blob> {
   const fbxRoot = modelGroup.children[0]
   if (!fbxRoot) throw new Error('No model loaded to export')
@@ -376,7 +386,7 @@ export async function exportGlb({
   // export. SkeletonUtils.clone handles that remapping; it's a safe drop-in for non-skinned
   // hierarchies too (most Revit exports), so it's used unconditionally rather than branching.
   const clone = cloneSkeleton(fbxRoot) as THREE.Object3D
-  stripNonExportableChildren(clone)
+  stripNonExportableChildren(clone, deletedComponentIds ?? EMPTY_DELETED)
   stripInternalUserData(clone)
   applyMaterialExportSettings(clone, exportSettings)
   bakeTextureTransformsIntoUv(clone)
@@ -387,8 +397,14 @@ export async function exportGlb({
 
   // Export's own Component Edges toggle is independent of the live viewport's show/hide —
   // per spec, an author may want edges visible in the editor but excluded from the shipped GLB.
+  // Deleted components' edges are always excluded, merged in alongside the user's own
+  // hidden-edge choices rather than threading a separate parameter through buildExportEdgesMesh.
   if (exportSettings.includeEdges) {
-    const edgesGroup = buildExportEdgesMesh(modelGroup, edgeSettings, hiddenEdgeComponentIds, hiddenEdgeKeys)
+    const edgesForExport =
+      deletedComponentIds && deletedComponentIds.size > 0
+        ? new Set([...(hiddenEdgeComponentIds ?? []), ...deletedComponentIds])
+        : hiddenEdgeComponentIds
+    const edgesGroup = buildExportEdgesMesh(modelGroup, edgeSettings, edgesForExport, hiddenEdgeKeys)
     if (edgesGroup) {
       stampEdgeMeshBuildStages(edgesGroup, stageAssignments)
       exportRoot.add(edgesGroup)
