@@ -9,6 +9,7 @@ import type { SunSettings } from '../types/sun'
 import { DEFAULT_SUN_SETTINGS } from '../types/sun'
 import type { ProductInfo } from '../types/product'
 import { isProductInfoEmpty } from '../types/product'
+import type { HistorySnapshot } from '../types/history'
 import { importFbx } from '../three/fbxImport'
 import { storeAssetFile } from '../db/assetCache'
 import { SceneManager, type ProjectionMode } from '../three/SceneManager'
@@ -101,6 +102,10 @@ interface AppState {
   activeRightPanel: RightPanelKey
   editingMaterialId: string | null
   statusMessage: string
+
+  // Undo/redo — see src/types/history.ts for exactly what's (and isn't) tracked.
+  undoStack: HistorySnapshot[]
+  redoStack: HistorySnapshot[]
 
   // Actions
   initSceneManager: (sm: SceneManager) => void
@@ -200,6 +205,18 @@ interface AppState {
   openMaterialEditor: (materialId: string | null) => void
   closeMaterialEditor: () => void
   setStatusMessage: (msg: string) => void
+
+  /** Records the current content state onto the undo stack before a content-changing action
+   * applies its own change, and clears the redo stack (a fresh edit invalidates whatever was
+   * un-done). `kind` coalesces rapid repeats of the *same* kind of edit (a slider drag firing many
+   * onChange events, several quick clicks) into a single undo step — see HISTORY_COALESCE_MS. */
+  pushHistory: (kind: string) => void
+  /** Restores every HistorySnapshot field at once (one `set()` call) and re-runs exactly the side
+   * effects those fields normally trigger on their own (reapply materials/product info, rebuild
+   * edge preview, reapply sun settings, re-push visibility) — used by both undo and redo. */
+  applyHistorySnapshot: (snapshot: HistorySnapshot) => void
+  undo: () => void
+  redo: () => void
 }
 
 function applyVisibility(root: THREE.Object3D, hidden: Set<string>, isolate: Set<string> | null) {
@@ -213,6 +230,37 @@ function applyVisibility(root: THREE.Object3D, hidden: Set<string>, isolate: Set
     }
   })
 }
+
+/** Builds the undoable "content" snapshot from the live store state — see HistorySnapshot for
+ * exactly what's captured and why. The Record/array-valued fields here are safe to reference
+ * directly rather than deep-cloning: every action in this store already replaces them wholesale
+ * (spread into a new object/array) rather than mutating in place, so a reference taken now can
+ * never be changed out from under a stored snapshot later. */
+function getHistorySnapshot(s: AppState): HistorySnapshot {
+  return {
+    materialAssignments: s.materialAssignments,
+    faceMaterialAssignments: s.faceMaterialAssignments,
+    productInfo: s.productInfo,
+    folders: s.folders,
+    folderMembership: s.folderMembership,
+    componentNames: Object.fromEntries(Array.from(s.objectMeta.entries()).map(([k, m]) => [k, m.name])),
+    hiddenComponentIds: Array.from(s.hiddenComponentIds),
+    hiddenEdgeComponentIds: Array.from(s.hiddenEdgeComponentIds),
+    hiddenEdgeKeys: Object.fromEntries(Object.entries(s.hiddenEdgeKeys).map(([k, v]) => [k, Array.from(v)])),
+    edgeSettings: s.edgeSettings,
+    exportSettings: s.exportSettings,
+    sunSettings: s.sunSettings,
+  }
+}
+
+const MAX_HISTORY_ENTRIES = 100
+/** A burst of same-kind pushHistory calls within this window (a slider being dragged, several
+ * quick successive clicks) collapses into the single undo step that started the burst, rather
+ * than one step per intermediate value — so Ctrl+Z undoes "that drag"/"that run of clicks", not
+ * one imperceptible increment of it. */
+const HISTORY_COALESCE_MS = 600
+let lastHistoryPushAt = 0
+let lastHistoryKind: string | null = null
 
 /** Every componentId under `selectedIds` — groups and meshes alike, including the selected ids
  * themselves and every descendant's — so a bulk action on a group (e.g. a whole Revit family
@@ -297,6 +345,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   editingMaterialId: null,
   statusMessage: 'Ready. Import an FBX to begin.',
 
+  undoStack: [],
+  redoStack: [],
+
   initSceneManager: (sm) => {
     const edgePreview = new EdgePreviewController()
     set({ sceneManager: sm, edgePreview })
@@ -311,6 +362,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const fbxAssetId = await storeAssetFile(file)
 
       isolateSet = null
+      lastHistoryKind = null
       set({
         modelRoot: result.root,
         objectTree: result.tree,
@@ -333,6 +385,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedComponentIds: [],
         lastSelectedComponentId: null,
         hoveredComponentId: null,
+        undoStack: [],
+        redoStack: [],
         statusMessage: `Imported ${file.name} — ${result.objectMeta.size} objects, ${result.fbxMaterialNames.length} FBX materials.`,
       })
 
@@ -340,6 +394,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       sm?.fitToScreen()
       get().setEdgeSettings({})
       get().setSunSettings({})
+      // setEdgeSettings/setSunSettings above each push a history entry; a fresh import has no
+      // prior state worth undoing back to, so discard those rather than leaving the stack with
+      // one redundant no-op entry at the bottom.
+      set({ undoStack: [], redoStack: [] })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown FBX import error'
       set({ importing: false, importError: message, statusMessage: `Import failed: ${message}` })
@@ -379,6 +437,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   renameComponent: (componentId, name) => {
     const trimmed = name.trim()
     if (!trimmed) return
+    get().pushHistory('renameComponent')
     set((s) => {
       const meta = s.objectMeta.get(componentId)
       if (!meta) return {}
@@ -419,6 +478,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   toggleVisibility: (componentId) => {
+    get().pushHistory('visibility')
     set((s) => {
       const next = new Set(s.hiddenComponentIds)
       if (next.has(componentId)) next.delete(componentId)
@@ -461,6 +521,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   showAll: () => {
+    get().pushHistory('visibility')
     isolateSet = null
     set({ hiddenComponentIds: new Set(), isolateActive: false })
     const { modelRoot } = get()
@@ -468,6 +529,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   createFolderFromSelection: (name, componentIds) => {
+    get().pushHistory('folder')
     const id = makeId('folder')
     set((s) => {
       const membership = { ...s.folderMembership }
@@ -481,6 +543,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   renameFolder: (folderId, name) => {
+    get().pushHistory('renameFolder')
     set((s) => {
       const folder = s.folders[folderId]
       if (!folder) return {}
@@ -489,6 +552,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   deleteFolder: (folderId) => {
+    get().pushHistory('folder')
     // Ungroup: contents (subfolders and objects alike) move up to the deleted folder's own
     // parent level — a top-level folder's contents return to the tree at their original
     // position. The underlying objects/subfolders themselves are never deleted.
@@ -515,6 +579,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   moveComponentsToFolder: (componentIds, folderId) => {
+    get().pushHistory('folder')
     set((s) => {
       const membership = { ...s.folderMembership }
       for (const cid of componentIds) {
@@ -527,6 +592,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   reorderComponentsInFolder: (componentIds, folderId, beforeComponentId) => {
     if (componentIds.length === 0) return
+    get().pushHistory('folder')
     set((s) => {
       const draggedSet = new Set(componentIds)
       if (beforeComponentId && draggedSet.has(beforeComponentId)) return {} // dropped onto itself/its own group
@@ -561,6 +627,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   moveFolderToFolder: (folderId, parentId) => {
+    get().pushHistory('folder')
     set((s) => {
       const folder = s.folders[folderId]
       if (!folder) return {}
@@ -575,6 +642,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { folders, folderMembership, hiddenComponentIds } = get()
     const ids = collectFolderComponentIds(folders, folderMembership, folderId)
     if (ids.length === 0) return
+    get().pushHistory('visibility')
     const allHidden = ids.every((id) => hiddenComponentIds.has(id))
     set((s) => {
       const next = new Set(s.hiddenComponentIds)
@@ -603,6 +671,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setFolderBuildStage: (folderId, isStage) => {
+    get().pushHistory('buildStage')
     set((s) => {
       const folder = s.folders[folderId]
       if (!folder) return {}
@@ -619,6 +688,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   moveBuildStageOrder: (folderId, direction) => {
+    get().pushHistory('buildStage')
     set((s) => {
       const stages = getBuildStageFolders(s.folders)
       const idx = stages.findIndex((f) => f.id === folderId)
@@ -644,6 +714,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   assignMaterialToComponents: async (materialId, componentIds) => {
     if (componentIds.length === 0) return
+    get().pushHistory('material')
     set((s) => {
       const next = { ...s.materialAssignments }
       for (const id of componentIds) {
@@ -769,6 +840,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setProductInfoForComponents: (componentIds, info) => {
     if (componentIds.length === 0) return
+    get().pushHistory('productInfo')
     set((s) => {
       const next = { ...s.productInfo }
       for (const componentId of componentIds) {
@@ -831,6 +903,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   assignMaterialToFaceSelection: async (materialId) => {
     const { faceSelectComponentId, faceSelectedFaceIndices } = get()
     if (!faceSelectComponentId || faceSelectedFaceIndices.size === 0) return
+    get().pushHistory('faceMaterial')
     set((s) => {
       const nextForComponent = { ...(s.faceMaterialAssignments[faceSelectComponentId] ?? {}) }
       for (const f of faceSelectedFaceIndices) {
@@ -871,6 +944,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   resetCamera: () => get().sceneManager?.resetCamera(),
 
   setEdgeSettings: (partial) => {
+    get().pushHistory('edgeSettings')
     const merged = clampEdgeSettings({ ...get().edgeSettings, ...partial })
     set({ edgeSettings: merged })
     get().rebuildEdgePreview()
@@ -891,6 +965,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!modelRoot || componentIds.length === 0) return
     const expanded = collectComponentIdsIncludingDescendants(modelRoot, componentIds)
     if (expanded.size === 0) return
+    get().pushHistory('edgeVisibility')
     const { hiddenEdgeComponentIds } = get()
     const allHidden = Array.from(expanded).every((id) => hiddenEdgeComponentIds.has(id))
     set((s) => {
@@ -905,6 +980,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   toggleEdgeHidden: (componentId, edgeKey) => {
+    get().pushHistory('edgeVisibility')
     set((s) => {
       const next = { ...s.hiddenEdgeKeys }
       const forComponent = new Set(next[componentId] ?? [])
@@ -918,20 +994,89 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   showAllHiddenEdges: () => {
+    get().pushHistory('edgeVisibility')
     set({ hiddenEdgeComponentIds: new Set(), hiddenEdgeKeys: {} })
     get().rebuildEdgePreview()
   },
 
   setSunSettings: (partial) => {
+    get().pushHistory('sunSettings')
     const merged = { ...get().sunSettings, ...partial }
     set({ sunSettings: merged })
     get().sceneManager?.applySunSettings(merged)
   },
 
-  setExportSettings: (partial) => set((s) => ({ exportSettings: { ...s.exportSettings, ...partial } })),
+  setExportSettings: (partial) => {
+    get().pushHistory('exportSettings')
+    set((s) => ({ exportSettings: { ...s.exportSettings, ...partial } }))
+  },
 
   setActiveRightPanel: (panel) => set({ activeRightPanel: panel }),
   openMaterialEditor: (materialId) => set({ editingMaterialId: materialId, activeRightPanel: 'materialEditor' }),
   closeMaterialEditor: () => set({ editingMaterialId: null, activeRightPanel: 'materials' }),
   setStatusMessage: (msg) => set({ statusMessage: msg }),
+
+  pushHistory: (kind) => {
+    const now = Date.now()
+    if (kind === lastHistoryKind && now - lastHistoryPushAt < HISTORY_COALESCE_MS) {
+      lastHistoryPushAt = now
+      return
+    }
+    lastHistoryPushAt = now
+    lastHistoryKind = kind
+    const snapshot = getHistorySnapshot(get())
+    set((s) => ({
+      undoStack: [...s.undoStack, snapshot].slice(-MAX_HISTORY_ENTRIES),
+      redoStack: [],
+    }))
+  },
+
+  applyHistorySnapshot: (snapshot) => {
+    const { modelRoot, isolateActive } = get()
+    set({
+      materialAssignments: snapshot.materialAssignments,
+      faceMaterialAssignments: snapshot.faceMaterialAssignments,
+      productInfo: snapshot.productInfo,
+      folders: snapshot.folders,
+      folderMembership: snapshot.folderMembership,
+      hiddenComponentIds: new Set(snapshot.hiddenComponentIds),
+      hiddenEdgeComponentIds: new Set(snapshot.hiddenEdgeComponentIds),
+      hiddenEdgeKeys: Object.fromEntries(Object.entries(snapshot.hiddenEdgeKeys).map(([k, v]) => [k, new Set(v)])),
+      edgeSettings: clampEdgeSettings(snapshot.edgeSettings),
+      exportSettings: snapshot.exportSettings,
+      sunSettings: snapshot.sunSettings,
+    })
+    get().applyComponentNames(snapshot.componentNames)
+    if (modelRoot) applyVisibility(modelRoot, get().hiddenComponentIds, isolateActive ? isolateSet : null)
+    void get().reapplyAllAssignments()
+    get().reapplyProductInfo()
+    get().rebuildEdgePreview()
+    get().sceneManager?.applySunSettings(snapshot.sunSettings)
+  },
+
+  undo: () => {
+    const { undoStack } = get()
+    if (undoStack.length === 0) return
+    const current = getHistorySnapshot(get())
+    const previous = undoStack[undoStack.length - 1]
+    set((s) => ({
+      undoStack: s.undoStack.slice(0, -1),
+      redoStack: [...s.redoStack, current],
+    }))
+    get().applyHistorySnapshot(previous)
+    lastHistoryKind = null // the next edit should never silently coalesce with whatever preceded the undo
+  },
+
+  redo: () => {
+    const { redoStack } = get()
+    if (redoStack.length === 0) return
+    const current = getHistorySnapshot(get())
+    const next = redoStack[redoStack.length - 1]
+    set((s) => ({
+      redoStack: s.redoStack.slice(0, -1),
+      undoStack: [...s.undoStack, current],
+    }))
+    get().applyHistorySnapshot(next)
+    lastHistoryKind = null
+  },
 }))

@@ -43,6 +43,10 @@ export function TopBar() {
   const folderMembership = useAppStore((s) => s.folderMembership)
   const hiddenEdgeComponentIds = useAppStore((s) => s.hiddenEdgeComponentIds)
   const hiddenEdgeKeys = useAppStore((s) => s.hiddenEdgeKeys)
+  const undoStackSize = useAppStore((s) => s.undoStack.length)
+  const redoStackSize = useAppStore((s) => s.redoStack.length)
+  const undo = useAppStore((s) => s.undo)
+  const redo = useAppStore((s) => s.redo)
   const setStatusMessage = useAppStore((s) => s.setStatusMessage)
 
   const projectName = useProjectStore((s) => s.currentProjectName)
@@ -207,6 +211,27 @@ export function TopBar() {
         className="hidden"
         onChange={handleFbxChosen}
       />
+
+      <div className="h-5 w-px bg-[var(--panel-border)]" />
+
+      <div className="flex items-center gap-0.5">
+        <button
+          title="Undo (Ctrl+Z)"
+          className="flex h-7 w-7 items-center justify-center rounded text-[var(--text-dim)] hover:bg-white/5 hover:text-[var(--text)] disabled:opacity-30 disabled:hover:bg-transparent"
+          disabled={undoStackSize === 0}
+          onClick={undo}
+        >
+          <Icon name="undo" size={15} />
+        </button>
+        <button
+          title="Redo (Ctrl+Shift+Z)"
+          className="flex h-7 w-7 items-center justify-center rounded text-[var(--text-dim)] hover:bg-white/5 hover:text-[var(--text)] disabled:opacity-30 disabled:hover:bg-transparent"
+          disabled={redoStackSize === 0}
+          onClick={redo}
+        >
+          <Icon name="redo" size={15} />
+        </button>
+      </div>
 
       <div className="h-5 w-px bg-[var(--panel-border)]" />
 
