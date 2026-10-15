@@ -36,6 +36,7 @@ export function buildProjectSnapshot(id: string, name: string): AuthoringProject
     productInfo: app.productInfo,
     faceMaterialAssignments: app.faceMaterialAssignments,
     visibility: Object.fromEntries(Array.from(app.objectMeta.keys()).map((k) => [k, !app.hiddenComponentIds.has(k)])),
+    deletedComponentIds: Array.from(app.deletedComponentIds),
     componentNames: Object.fromEntries(Array.from(app.objectMeta.entries()).map(([k, meta]) => [k, meta.name])),
     folders: app.folders,
     folderMembership: app.folderMembership,
@@ -98,6 +99,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             .filter(([, visible]) => !visible)
             .map(([id]) => id),
         ),
+        deletedComponentIds: new Set(project.deletedComponentIds ?? []),
         folders: project.folders ?? {},
         folderMembership: project.folderMembership ?? {},
         hiddenEdgeComponentIds: new Set(project.hiddenEdgeComponentIds ?? []),
@@ -107,6 +109,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       app.reapplyProductInfo()
       app.applyComponentNames(project.componentNames ?? {})
       app.rebuildEdgePreview()
+      app.reapplyVisibility()
     }
 
     // setEdgeSettings/setExportSettings/setSunSettings above each push a history entry capturing

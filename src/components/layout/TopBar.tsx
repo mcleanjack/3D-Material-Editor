@@ -43,6 +43,7 @@ export function TopBar() {
   const folderMembership = useAppStore((s) => s.folderMembership)
   const hiddenEdgeComponentIds = useAppStore((s) => s.hiddenEdgeComponentIds)
   const hiddenEdgeKeys = useAppStore((s) => s.hiddenEdgeKeys)
+  const deletedComponentIds = useAppStore((s) => s.deletedComponentIds)
   const undoStackSize = useAppStore((s) => s.undoStack.length)
   const redoStackSize = useAppStore((s) => s.redoStack.length)
   const undo = useAppStore((s) => s.undo)
@@ -96,6 +97,7 @@ export function TopBar() {
         folderMembership,
         hiddenEdgeComponentIds,
         hiddenEdgeKeys,
+        deletedComponentIds,
       })
 
       let sizeInfo: OptimizeSizeInfo | undefined

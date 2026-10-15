@@ -25,6 +25,10 @@ export interface AuthoringProject {
   faceMaterialAssignments: Record<string, Record<number, string>>
   /** componentId -> visible */
   visibility: Record<string, boolean>
+  /** componentIds deleted from the model (see useAppStore.deleteComponents) — excluded from the
+   * Object Tree, the viewport, and GLB export. Optional for backward compatibility with projects
+   * saved before this feature existed. */
+  deletedComponentIds?: string[]
   /** componentId -> display name, capturing any renames (see useAppStore.renameComponent) —
    * without this, re-importing the source FBX on open would regenerate every name straight from
    * the FBX's own object names, silently reverting a rename. Optional for backward compatibility

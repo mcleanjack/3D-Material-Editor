@@ -17,6 +17,7 @@ import { Icon } from '../common/Icon'
 import { PanelShell } from './PanelShell'
 import { MaterialPicker } from './MaterialPicker'
 import { PromptDialog } from '../common/PromptDialog'
+import { ConfirmDialog } from '../common/ConfirmDialog'
 
 function isPdfFile(file: File): boolean {
   return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
@@ -86,12 +87,20 @@ function folderMatchesSearch(
 }
 
 /** Appends `node`'s own componentId, then recurses into its visible children (those not pulled
- * into a folder), in the exact order TreeRow renders them — a depth-first, top-to-bottom walk. */
-function flattenNodeOrder(node: ObjectTreeNode, folderMembership: Record<string, string>, out: string[]) {
+ * into a folder), in the exact order TreeRow renders them — a depth-first, top-to-bottom walk.
+ * A deleted node (and everything under it) is skipped entirely, matching TreeRow's own
+ * early-return so a range-select never reaches into a deleted subtree. */
+function flattenNodeOrder(
+  node: ObjectTreeNode,
+  folderMembership: Record<string, string>,
+  deletedComponentIds: ReadonlySet<string>,
+  out: string[],
+) {
+  if (deletedComponentIds.has(node.componentId)) return
   out.push(node.componentId)
   for (const child of node.children) {
     if (folderMembership[child.componentId]) continue
-    flattenNodeOrder(child, folderMembership, out)
+    flattenNodeOrder(child, folderMembership, deletedComponentIds, out)
   }
 }
 
@@ -102,15 +111,16 @@ function flattenFolderOrder(
   folders: Record<string, TreeFolder>,
   folderMembership: Record<string, string>,
   nodeMap: Map<string, ObjectTreeNode>,
+  deletedComponentIds: ReadonlySet<string>,
   out: string[],
 ) {
   for (const f of Object.values(folders)) {
-    if (f.parentId === folderId) flattenFolderOrder(f.id, folders, folderMembership, nodeMap, out)
+    if (f.parentId === folderId) flattenFolderOrder(f.id, folders, folderMembership, nodeMap, deletedComponentIds, out)
   }
   for (const [componentId, fid] of Object.entries(folderMembership)) {
     if (fid !== folderId) continue
     const node = nodeMap.get(componentId)
-    if (node) flattenNodeOrder(node, folderMembership, out)
+    if (node) flattenNodeOrder(node, folderMembership, deletedComponentIds, out)
   }
 }
 
@@ -124,12 +134,13 @@ function computeVisibleOrder(
   folders: Record<string, TreeFolder>,
   folderMembership: Record<string, string>,
   nodeMap: Map<string, ObjectTreeNode>,
+  deletedComponentIds: ReadonlySet<string>,
 ): string[] {
   const out: string[] = []
   for (const f of Object.values(folders)) {
-    if (f.parentId === null) flattenFolderOrder(f.id, folders, folderMembership, nodeMap, out)
+    if (f.parentId === null) flattenFolderOrder(f.id, folders, folderMembership, nodeMap, deletedComponentIds, out)
   }
-  if (objectTree) flattenNodeOrder(objectTree, folderMembership, out)
+  if (objectTree) flattenNodeOrder(objectTree, folderMembership, deletedComponentIds, out)
   return out
 }
 
@@ -161,6 +172,7 @@ function TreeRow({
   const lastSelectedComponentId = useAppStore((s) => s.lastSelectedComponentId)
   const hoveredComponentId = useAppStore((s) => s.hoveredComponentId)
   const hiddenComponentIds = useAppStore((s) => s.hiddenComponentIds)
+  const deletedComponentIds = useAppStore((s) => s.deletedComponentIds)
   const folderMembership = useAppStore((s) => s.folderMembership)
   const hasProductInfo = useAppStore((s) => !!s.productInfo[node.componentId])
   const hasHiddenEdges = useAppStore(
@@ -171,17 +183,21 @@ function TreeRow({
   const reorderComponentsInFolder = useAppStore((s) => s.reorderComponentsInFolder)
   const setHover = useAppStore((s) => s.setHover)
   const toggleVisibility = useAppStore((s) => s.toggleVisibility)
+  const deleteComponents = useAppStore((s) => s.deleteComponents)
   const nodeMap = useNodeMap(objectTree)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   if (query && !nodeMatchesSearch(node, query)) return null
+  if (deletedComponentIds.has(node.componentId)) return null
 
   const selected = selectedComponentIds.includes(node.componentId)
   const hovered = hoveredComponentId === node.componentId
   const hidden = hiddenComponentIds.has(node.componentId)
   // Children that have been grouped into a folder render there instead of at their original
   // tree position — everything else (including any un-grouped children of a grouped node)
-  // renders normally, wherever that node ends up.
-  const visibleChildren = node.children.filter((c) => !folderMembership[c.componentId])
+  // renders normally, wherever that node ends up. Deleted children are filtered the same way as
+  // the row itself above, so a deleted subtree disappears entirely rather than leaving a gap.
+  const visibleChildren = node.children.filter((c) => !folderMembership[c.componentId] && !deletedComponentIds.has(c.componentId))
   const hasChildren = visibleChildren.length > 0
   const isExpanded = query ? true : expanded
 
@@ -229,7 +245,7 @@ function TreeRow({
         title="Click to select. Shift-click to select the range from the last selected object. Ctrl/Cmd-click to add or remove one."
         onClick={(e) => {
           if (e.shiftKey && lastSelectedComponentId) {
-            const order = computeVisibleOrder(objectTree, folders, folderMembership, nodeMap)
+            const order = computeVisibleOrder(objectTree, folders, folderMembership, nodeMap, deletedComponentIds)
             const anchorIndex = order.indexOf(lastSelectedComponentId)
             const targetIndex = order.indexOf(node.componentId)
             if (anchorIndex !== -1 && targetIndex !== -1) {
@@ -273,6 +289,16 @@ function TreeRow({
         >
           <Icon name={hidden ? 'eyeOff' : 'eye'} size={12} />
         </button>
+        <button
+          title="Delete"
+          className="shrink-0 rounded p-0.5 opacity-60 hover:bg-red-500/20 hover:text-red-400 hover:opacity-100"
+          onClick={(e) => {
+            e.stopPropagation()
+            setConfirmDelete(true)
+          }}
+        >
+          <Icon name="trash" size={12} />
+        </button>
         {dropEdge && (
           <div
             className={`pointer-events-none absolute inset-x-0 h-0.5 rounded bg-blue-400 ${dropEdge === 'top' ? '-top-px' : '-bottom-px'}`}
@@ -285,6 +311,23 @@ function TreeRow({
             <TreeRow key={child.componentId} node={child} depth={depth + 1} query={query} />
           ))}
         </div>
+      )}
+      {confirmDelete && (
+        <ConfirmDialog
+          title={`Delete "${node.name}"?`}
+          message={
+            hasChildren
+              ? 'This removes it and everything inside it from the model and GLB export. Press Ctrl+Z to undo.'
+              : 'This removes it from the model and GLB export. Press Ctrl+Z to undo.'
+          }
+          confirmLabel="DELETE"
+          danger
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            deleteComponents([node.componentId])
+            setConfirmDelete(false)
+          }}
+        />
       )}
     </div>
   )
@@ -299,6 +342,7 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
   const folderMembership = useAppStore((s) => s.folderMembership)
   const objectTree = useAppStore((s) => s.objectTree)
   const hiddenComponentIds = useAppStore((s) => s.hiddenComponentIds)
+  const deletedComponentIds = useAppStore((s) => s.deletedComponentIds)
   const selectedComponentIds = useAppStore((s) => s.selectedComponentIds)
   const selectFolderContents = useAppStore((s) => s.selectFolderContents)
   const toggleFolderVisibility = useAppStore((s) => s.toggleFolderVisibility)
@@ -315,12 +359,14 @@ function FolderRow({ folder, depth, query }: { folder: TreeFolder; depth: number
   const isExpanded = query ? true : expanded
   const childFolders = Object.values(folders).filter((f) => f.parentId === folder.id)
   const memberNodes = Object.entries(folderMembership)
-    .filter(([, fid]) => fid === folder.id)
+    .filter(([cid, fid]) => fid === folder.id && !deletedComponentIds.has(cid))
     .map(([cid]) => nodeMap.get(cid))
     .filter((n): n is ObjectTreeNode => !!n)
   const hasChildren = childFolders.length > 0 || memberNodes.length > 0
 
-  const allComponentIds = collectFolderComponentIds(folders, folderMembership, folder.id)
+  const allComponentIds = collectFolderComponentIds(folders, folderMembership, folder.id).filter(
+    (id) => !deletedComponentIds.has(id),
+  )
   const hidden = allComponentIds.length > 0 && allComponentIds.every((id) => hiddenComponentIds.has(id))
   const selected = allComponentIds.length > 0 && allComponentIds.every((id) => selectedComponentIds.includes(id))
   const isBuildStage = folder.buildStageOrder !== undefined
@@ -456,8 +502,10 @@ function SelectionAssignment() {
   const assignMaterialToComponents = useAppStore((s) => s.assignMaterialToComponents)
   const createFolderFromSelection = useAppStore((s) => s.createFolderFromSelection)
   const toggleComponentEdgesHidden = useAppStore((s) => s.toggleComponentEdgesHidden)
+  const deleteComponents = useAppStore((s) => s.deleteComponents)
   const [pending, setPending] = useState<string | null | undefined>(undefined)
   const [creatingFolder, setCreatingFolder] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   if (selectedComponentIds.length === 0) return null
 
@@ -491,6 +539,16 @@ function SelectionAssignment() {
               New Folder from Selection
             </span>
           </button>
+          <button
+            title="Delete the selected component(s) from the model and GLB export"
+            className="rounded bg-[#2a2c33] px-1.5 py-1 text-[11px] text-[var(--text)] hover:bg-red-500/20 hover:text-red-400"
+            onClick={() => setConfirmDelete(true)}
+          >
+            <span className="inline-flex items-center gap-1">
+              <Icon name="trash" size={11} />
+              Delete
+            </span>
+          </button>
         </div>
       </div>
       <div className="mb-1.5 text-[11px] text-[var(--text-dim)]">
@@ -514,6 +572,19 @@ function SelectionAssignment() {
           onConfirm={(name) => {
             createFolderFromSelection(name, selectedComponentIds)
             setCreatingFolder(false)
+          }}
+        />
+      )}
+      {confirmDelete && (
+        <ConfirmDialog
+          title={`Delete ${selectedComponentIds.length} object${selectedComponentIds.length > 1 ? 's' : ''}?`}
+          message="This removes them (and anything inside them) from the model and GLB export. Press Ctrl+Z to undo."
+          confirmLabel="DELETE"
+          danger
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            deleteComponents(selectedComponentIds)
+            setConfirmDelete(false)
           }}
         />
       )}

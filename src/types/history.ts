@@ -22,6 +22,10 @@ export interface HistorySnapshot {
   /** componentId -> display name, mirroring AuthoringProject.componentNames. */
   componentNames: Record<string, string>
   hiddenComponentIds: string[]
+  /** componentIds deleted via useAppStore.deleteComponents — see that action's doc comment for
+   * why this is a soft delete (filtered out of the tree/viewport/export) rather than actually
+   * removing anything from the live Three.js scene. */
+  deletedComponentIds: string[]
   hiddenEdgeComponentIds: string[]
   hiddenEdgeKeys: Record<string, string[]>
   edgeSettings: EdgeSettings
