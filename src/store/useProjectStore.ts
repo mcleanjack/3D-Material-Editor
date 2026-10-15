@@ -109,6 +109,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       app.rebuildEdgePreview()
     }
 
+    // setEdgeSettings/setExportSettings/setSunSettings above each push a history entry capturing
+    // state from partway through this load (old content mixed with the new settings) — loading a
+    // project replaces the whole document, so none of that is a meaningful undo step; start the
+    // newly-loaded project with a clean slate instead.
+    useAppStore.setState({ undoStack: [], redoStack: [] })
+
     if (project.camera && app.sceneManager) {
       app.sceneManager.camera.position.set(...project.camera.position)
       app.sceneManager.controls.target.set(...project.camera.target)
