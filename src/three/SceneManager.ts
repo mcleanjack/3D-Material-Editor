@@ -4,6 +4,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { COMPONENT_ID_KEY, isAuxiliaryMesh } from '../types/scene'
 import type { SunSettings } from '../types/sun'
 import { getCanonicalGeometry, getFaceCount, getFaceLocalPositions, toCanonicalFaceIndex } from './faceMaterials'
+import { getCoplanarFaceGroupMembers } from './faceGroups'
 
 export type ProjectionMode = 'perspective' | 'orthographic'
 
@@ -31,6 +32,10 @@ export interface FaceHit {
   mesh: THREE.Mesh
   componentId: string
   canonicalFaceIndex: number
+  /** Every canonical face index belonging to the same reconstructed (pre-triangulation) polygon
+   * as canonicalFaceIndex, including itself — see faceGroups.ts. This is what Face Select click
+   * actually selects, so picking one half of a triangulated quad picks the whole quad. */
+  faceGroupIndices: number[]
 }
 
 export interface FaceRectPick {
@@ -370,7 +375,10 @@ export class SceneManager {
     const mesh = hit.object as THREE.Mesh
     const componentId = SceneManager.findComponentId(mesh)
     if (!componentId) return null
-    return { mesh, componentId, canonicalFaceIndex: toCanonicalFaceIndex(mesh, hit.faceIndex!) }
+    const canonicalFaceIndex = toCanonicalFaceIndex(mesh, hit.faceIndex!)
+    const canonical = getCanonicalGeometry(mesh)
+    const faceGroupIndices = canonical ? getCoplanarFaceGroupMembers(canonical, canonicalFaceIndex) : [canonicalFaceIndex]
+    return { mesh, componentId, canonicalFaceIndex, faceGroupIndices }
   }
 
   /** Face Select mode marquee: finds the mesh under the rectangle's center, then tests every one
